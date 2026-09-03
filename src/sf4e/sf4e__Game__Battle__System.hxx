@@ -1,4 +1,7 @@
 #pragma once
+#include <cstdint>
+#include <map>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -99,12 +102,61 @@ namespace sf4e {
 					};
 					GlobalData d;
 
+					// Per-key checksums, in `keys` order, plus a checksum of the
+					// non-memento global data, folded into a single value that is
+					// handed to GGPO. Sound state is intentionally excluded for now:
+					// it holds live adapter pointers and handles.
+					struct KeyChecksum {
+						GameMementoKey* key;
+						void* mementoable;
+						uint32_t size;
+						uint32_t checksum;
+					};
+					std::vector<KeyChecksum> keyChecksums;
+					uint32_t globalChecksum = 0;
+					uint32_t checksum = 0;
+
 					SaveState();
 
 					static void Free(SaveState* dst);
 					static void Save(SaveState* dst);
 					static void Load(SaveState* src);
+					static void ComputeChecksum(SaveState* s);
 				};
+
+				// Offline rollback verification built on GGPO's synctest backend.
+				// The match runs with both players local; every `nCheckDistance`
+				// frames GGPO loads the last verified state, re-simulates, and the
+				// checksum of every re-saved frame is compared with the checksum
+				// recorded on the original pass. Any mismatch is state that the
+				// save/load path does not capture (or non-determinism in the sim).
+				struct SyncTest {
+					struct FrameRecord {
+						uint32_t checksum;
+						uint32_t globalChecksum;
+						std::vector<SaveState::KeyChecksum> keys;
+						// Concatenated memento buffers followed by the raw global
+						// data, only captured when bDumpOnMismatch is set.
+						std::vector<uint8_t> blob;
+						std::vector<std::pair<uint32_t, uint32_t>> ranges;
+					};
+
+					bool bArmed = false;
+					bool bActive = false;
+					bool bDumpOnMismatch = true;
+					int nCheckDistance = 1;
+					int nFramesVerified = 0;
+					int nMismatches = 0;
+					int nLastMismatchFrame = -1;
+					std::string lastMismatchSummary;
+					std::string lastDumpPath;
+					std::map<int, FrameRecord> records;
+				};
+				static SyncTest syncTest;
+				static void ArmSyncTest(int checkDistance);
+				static void DisarmSyncTest();
+				static void StartSyncTest();
+				static void SyncTestVerify(int frame, SaveState* state);
 
 				struct StateSnapshotMeta {
 					bool sent;

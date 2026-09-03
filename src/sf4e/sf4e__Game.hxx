@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <set>
 
 #include "../Dimps/Dimps__Game.hxx"
@@ -10,12 +11,31 @@ namespace sf4e {
 	namespace Game {
 		void Install();
 
+		// Small, fast, non-cryptographic hashing used for save-state checksums.
+		// MurmurHash3 x86_32. Deterministic across processes for identical bytes.
+		namespace Hash {
+			uint32_t Bytes(const void* data, size_t len, uint32_t seed);
+			uint32_t Mix(uint32_t h, uint32_t v);
+		}
+
 		struct GameMementoKey : Dimps::Game::GameMementoKey
 		{
 			void Initialize(void* mementoable, int numMementos);
 			void ClearKey();
 			static void Install();
-			static void GenerateChecksums();
+
+			// Size in bytes of the key's whole allocation (`sizeAllocated`),
+			// which holds the memento data followed by the metadata table.
+			static size_t GetBufferSize(const Dimps::Game::GameMementoKey* key);
+
+			// Size in bytes of just the memento data: mementoSize * numMementos,
+			// the region between `mementos` and `metadata`.
+			static size_t GetMementoDataSize(const Dimps::Game::GameMementoKey* key);
+
+			// Checksum of the key's memento data. The game zeroes the buffer
+			// when a key is initialized, so padding hashes deterministically;
+			// the metadata table is excluded because it holds pointers.
+			static uint32_t Checksum(const Dimps::Game::GameMementoKey* key);
 
 			static std::set<Dimps::Game::GameMementoKey*> trackedKeys;
 		};

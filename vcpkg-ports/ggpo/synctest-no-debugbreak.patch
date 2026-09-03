@@ -1,0 +1,27 @@
+diff --git a/src/lib/ggpo/backends/synctest.cpp b/src/lib/ggpo/backends/synctest.cpp
+index 4af0426..b42b0e3 100644
+--- a/src/lib/ggpo/backends/synctest.cpp
++++ b/src/lib/ggpo/backends/synctest.cpp
+@@ -169,7 +169,9 @@ SyncTestBackend::RaiseSyncError(const char *fmt, ...)
+    puts(buf);
+    OutputDebugStringA(buf);
+    EndLog();
+-   DebugBreak();
++   if (IsDebuggerPresent()) {
++      DebugBreak();
++   }
+ }
+ 
+ GGPOErrorCode
+@@ -185,6 +187,11 @@ void
+ SyncTestBackend::BeginLog(int saving)
+ {
+    EndLog();
++   if (GetEnvironmentVariableA("GGPO_SYNCTEST_LOGS", NULL, 0) == 0) {
++      // Per-frame log files are only useful with a debugger attached; do not
++      // litter the working directory unless explicitly requested.
++      return;
++   }
+ 
+    char filename[MAX_PATH];
+    CreateDirectoryA("synclogs", NULL);

@@ -665,6 +665,15 @@ void DrawGGPOStatsOverlay(GGPOSession* ggpo, fSystem::PlayerConnectionInfo* play
 	}
 	if (i == MAX_SF4E_PROTOCOL_USERS) {
 		// No remote player
+		if (fSystem::syncTest.bActive) {
+			Text(
+				"SYNC TEST  distance %d  verified %d  mismatches %d",
+				fSystem::syncTest.nCheckDistance,
+				fSystem::syncTest.nFramesVerified,
+				fSystem::syncTest.nMismatches
+			);
+			return;
+		}
 		Columns(2);
 		Text("len(PndSnaps)"); NextColumn();
 		Text("len(snapMap)"); NextColumn();
@@ -1035,6 +1044,54 @@ void DrawNetworkLobbyPanel() {
 	}
 }
 
+void DrawSyncTestPanel() {
+	static int checkDistance = 1;
+	fSystem::SyncTest& st = fSystem::syncTest;
+
+	if (!ImGui::CollapsingHeader("Sync test (offline rollback check)")) {
+		return;
+	}
+	ImGui::TextWrapped(
+		"Plays a normal VS match with both sides local while GGPO rolls back and "
+		"re-simulates every N frames, comparing a checksum of the full save state. "
+		"No opponent needed. Combine with randomized inputs to fuzz."
+	);
+	if (st.bActive) {
+		Text("RUNNING  distance %d  verified %d  mismatches %d", st.nCheckDistance, st.nFramesVerified, st.nMismatches);
+		if (st.nMismatches > 0) {
+			ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 80, 80, 255));
+			ImGui::TextWrapped("Last: %s", st.lastMismatchSummary.c_str());
+			ImGui::PopStyleColor();
+			if (!st.lastDumpPath.empty()) {
+				ImGui::TextWrapped("Dumps: %s", st.lastDumpPath.c_str());
+			}
+		}
+		return;
+	}
+	if (st.bArmed) {
+		Text("Armed (distance %d). Start VERSUS > player vs player now.", st.nCheckDistance);
+		if (Button("Disarm")) {
+			fSystem::DisarmSyncTest();
+		}
+		return;
+	}
+	if (fUserApp::netplay) {
+		Text("Unavailable while netplay is active");
+		return;
+	}
+	ImGui::SliderInt("Check distance (frames)", &checkDistance, 1, GGPO_MAX_PREDICTION_FRAMES);
+	ImGui::Checkbox("Dump state on mismatch", &st.bDumpOnMismatch);
+	if (Button("Arm sync test for next VS match")) {
+		fSystem::ArmSyncTest(checkDistance);
+	}
+	if (st.nFramesVerified > 0 || st.nMismatches > 0) {
+		Text("Last run: verified %d, mismatches %d", st.nFramesVerified, st.nMismatches);
+		if (st.nMismatches > 0) {
+			ImGui::TextWrapped("Last: %s", st.lastMismatchSummary.c_str());
+		}
+	}
+}
+
 void DrawNetworkWindow(bool* pOpen) {
 	static bool bDebug = false;
 	static NetworkWindowState netState = NWS_CAPTURE;
@@ -1050,6 +1107,8 @@ void DrawNetworkWindow(bool* pOpen) {
 	Separator();
 	ImGui::InputInt("Randomize inputs every X frames", &fSystem::nRandomizeLocalInputsEveryXFramesInGGPO);
 	ImGui::Checkbox("Show debug data?", &bDebug);
+	Separator();
+	DrawSyncTestPanel();
 	Separator();
 	if (clientAlerts.size() > 0) {
 		ImU32 red = IM_COL32(255, 0, 0, 255);

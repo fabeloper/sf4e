@@ -1,9 +1,12 @@
 #include <algorithm>
+#include <fstream>
+#include <sstream>
 #include <string.h>
 #include <utility>
 #include <vector>
 
 #include <windows.h>
+#include <shlobj.h>
 #include <detours/detours.h>
 #include <GameNetworkingSockets/steam/steamnetworkingsockets.h>
 #include <GameNetworkingSockets/steam/isteamnetworkingutils.h>
@@ -73,6 +76,7 @@ GGPOPlayerHandle fSystem::localPlayerHandle = GGPO_INVALID_HANDLE;
 GGPOSession* fSystem::ggpo = nullptr;
 fSystem::PlayerConnectionInfo fSystem::players[MAX_SF4E_PROTOCOL_USERS];
 fSystem::SaveState fSystem::saveStates[NUM_SAVE_STATES];
+fSystem::SyncTest fSystem::syncTest;
 
 rKey::MementoID GGPO_MEMENTO_ID = { 1, 1 };
 
@@ -244,7 +248,7 @@ void fSystem::BattleUpdate() {
     rPadSystem* p = rPadSystem::staticMethods.GetSingleton();
     rPadSystem::__publicMethods& padMethods = rPadSystem::publicMethods;
     static int nLastRandomInputFrame = -1;
-    static fPadSystem::Inputs randomInputs = { 0, 0 };
+    static fPadSystem::Inputs randomInputs[2] = { { 0, 0 }, { 0, 0 } };
 
     if (!bUpdateAllowed) {
         return;
@@ -253,26 +257,32 @@ void fSystem::BattleUpdate() {
     if (ggpo && *rSystem::staticVars.CurrentBattleFlow != BF__IDLE) {
         GGPOErrorCode result = GGPO_OK;
         if (localPlayerHandle != GGPO_INVALID_HANDLE) {
-            for (int i = 0; i < 2; i++) {
-                if (players[i].type == GGPO_PLAYERTYPE_LOCAL) {
-                    fPadSystem::Inputs inputs;
-                    if (nRandomizeLocalInputsEveryXFramesInGGPO != 0) {
-                        int currentFrame = rSystem::GetNumFramesSimulated_FixedPoint(_this)->integral;
-                        if (
-                            nLastRandomInputFrame < 0 ||
-                            (currentFrame - nLastRandomInputFrame) > nRandomizeLocalInputsEveryXFramesInGGPO
-                        ) {
-                            randomInputs = { localRand(), localRand() };
-                            nLastRandomInputFrame = currentFrame;
-                        }
-                        inputs = randomInputs;
-                    }
-                    else {
-                        inputs = { (p->*padMethods.GetButtons_MappedOn)(i), (p->*padMethods.GetButtons_RawOn)(i) };
-                    }
-                    result = ggpo_add_local_input(ggpo, players[i].handle, &inputs, sizeof(fPadSystem::Inputs));
-                    break;
+            if (nRandomizeLocalInputsEveryXFramesInGGPO != 0) {
+                int currentFrame = rSystem::GetNumFramesSimulated_FixedPoint(_this)->integral;
+                if (
+                    nLastRandomInputFrame < 0 ||
+                    (currentFrame - nLastRandomInputFrame) > nRandomizeLocalInputsEveryXFramesInGGPO
+                ) {
+                    randomInputs[0] = { localRand(), localRand() };
+                    randomInputs[1] = { localRand(), localRand() };
+                    nLastRandomInputFrame = currentFrame;
                 }
+            }
+
+            // Submit inputs for every local side. Online sessions have exactly
+            // one; sync tests have both.
+            for (int i = 0; i < 2 && GGPO_SUCCEEDED(result); i++) {
+                if (players[i].type != GGPO_PLAYERTYPE_LOCAL) {
+                    continue;
+                }
+                fPadSystem::Inputs inputs;
+                if (nRandomizeLocalInputsEveryXFramesInGGPO != 0) {
+                    inputs = randomInputs[i];
+                }
+                else {
+                    inputs = { (p->*padMethods.GetButtons_MappedOn)(i), (p->*padMethods.GetButtons_RawOn)(i) };
+                }
+                result = ggpo_add_local_input(ggpo, players[i].handle, &inputs, sizeof(fPadSystem::Inputs));
             }
         }
 
@@ -329,12 +339,28 @@ void fSystem::CloseBattle() {
     if (ggpo) {
         ggpo_close_session(ggpo);
         ggpo = nullptr;
-    } 
+    }
     for (int i = 0; i < NUM_SAVE_STATES; i++) {
         if (saveStates[i].used) {
             SaveState::Free(&saveStates[i]);
         }
     }
+
+    // Snapshots are per-battle. Leaving them around makes the next battle
+    // compare against stale frames (upstream issue #9).
+    snapshotMap.clear();
+
+    if (syncTest.bActive) {
+        spdlog::info(
+            "Sync test finished: {} frames verified, {} mismatches (last @ {})",
+            syncTest.nFramesVerified,
+            syncTest.nMismatches,
+            syncTest.nLastMismatchFrame
+        );
+    }
+    syncTest.bActive = false;
+    syncTest.records.clear();
+
     (_this->*rSystem::publicMethods.CloseBattle)();
 
 }
@@ -623,7 +649,7 @@ bool fSystem::ggpo_load_game_state_callback(unsigned char* buffer, int len)
     return true;
 }
 
-bool fSystem::ggpo_save_game_state_callback(unsigned char** buffer, int* len, int* checksum, int)
+bool fSystem::ggpo_save_game_state_callback(unsigned char** buffer, int* len, int* checksum, int frame)
 {
     // No GGPO callback allocates data, then hands ownership to GGPO-
     // sf4e preallocates and manages all its savestates, and the memory
@@ -641,7 +667,11 @@ bool fSystem::ggpo_save_game_state_callback(unsigned char** buffer, int* len, in
 
         SaveState::Save(&saveStates[i]);
         *buffer = (unsigned char*)&saveStates[i];
-        *checksum = 0;
+        *checksum = (int)saveStates[i].checksum;
+
+        if (syncTest.bActive) {
+            SyncTestVerify(frame, &saveStates[i]);
+        }
 
         return true;
     }
@@ -820,6 +850,9 @@ void Clear(fSystem::SaveState* victim) {
     victim->d.BattleFlowCallback_CallEveryFrame_aa9254 = nullptr;
     victim->criPlayerState.clear();
     victim->managerState.clear();
+    victim->keyChecksums.clear();
+    victim->globalChecksum = 0;
+    victim->checksum = 0;
 }
 
 void fSystem::SaveState::Free(SaveState* victim) {
@@ -924,4 +957,300 @@ void fSystem::SaveState::Save(SaveState* dst) {
     dst->d.BattleFlowCallback_CallEveryFrame_aa9254 = *rSystem::staticVars.BattleFlowCallback_CallEveryFrame_aa9254;
 
     memcpy_s(&dst->d.gameManager, sizeof(GameManager), (system->*rSystem::publicMethods.GetGameManager)(), sizeof(GameManager));
+
+    SaveState::ComputeChecksum(dst);
+}
+
+static uint32_t HashGlobalData(const fSystem::SaveState::GlobalData& d) {
+    using sf4e::Game::Hash::Bytes;
+    using sf4e::Game::Hash::Mix;
+
+    // Hash field by field rather than the struct as a whole, so that
+    // compiler padding can never leak into the result.
+    uint32_t h = 0x474c4f42; // 'GLOB'
+    h = Mix(h, d.CurrentBattleFlow);
+    h = Mix(h, d.PreviousBattleFlow);
+    h = Mix(h, d.CurrentBattleFlowSubstate);
+    h = Mix(h, d.PreviousBattleFlowSubstate);
+    h = Bytes(&d.CurrentBattleFlowFrame, sizeof(FixedPoint), h);
+    h = Bytes(&d.CurrentBattleFlowSubstateFrame, sizeof(FixedPoint), h);
+    h = Bytes(&d.PreviousBattleFlowFrame, sizeof(FixedPoint), h);
+    h = Bytes(&d.PreviousBattleFlowSubstateFrame, sizeof(FixedPoint), h);
+    h = Mix(h, (uint32_t)d.BattleFlowSubstateCallable_aa9258);
+    h = Mix(h, (uint32_t)d.BattleFlowCallback_CallEveryFrame_aa9254);
+    h = Bytes(&d.gameManager, sizeof(GameManager), h);
+    return h;
+}
+
+void fSystem::SaveState::ComputeChecksum(SaveState* s) {
+    using sf4e::Game::Hash::Mix;
+
+    s->keyChecksums.clear();
+    s->keyChecksums.reserve(s->keys.size());
+
+    uint32_t total = 0x53463445; // 'SF4E'
+    for (auto iter = s->keys.begin(); iter != s->keys.end(); iter++) {
+        const rKey& keyCopy = iter->second;
+        KeyChecksum kc;
+        kc.key = iter->first;
+        kc.mementoable = keyCopy.mementoableObject;
+        kc.size = (uint32_t)fKey::GetMementoDataSize(&keyCopy);
+        kc.checksum = fKey::Checksum(&keyCopy);
+        s->keyChecksums.push_back(kc);
+        total = Mix(total, kc.checksum);
+    }
+
+    s->globalChecksum = HashGlobalData(s->d);
+    s->checksum = Mix(total, s->globalChecksum);
+}
+
+void fSystem::ArmSyncTest(int checkDistance) {
+    if (checkDistance < 1) {
+        checkDistance = 1;
+    }
+    if (checkDistance > GGPO_MAX_PREDICTION_FRAMES) {
+        checkDistance = GGPO_MAX_PREDICTION_FRAMES;
+    }
+    syncTest.nCheckDistance = checkDistance;
+    syncTest.bArmed = true;
+    fVsBattle::OnTasksRegistered = StartSyncTest;
+    spdlog::info("Sync test armed with check distance {}; start a VS match to begin", checkDistance);
+}
+
+void fSystem::DisarmSyncTest() {
+    syncTest.bArmed = false;
+    if (fVsBattle::OnTasksRegistered == StartSyncTest) {
+        fVsBattle::OnTasksRegistered = nullptr;
+    }
+}
+
+void fSystem::StartSyncTest() {
+    syncTest.bArmed = false;
+    syncTest.nFramesVerified = 0;
+    syncTest.nMismatches = 0;
+    syncTest.nLastMismatchFrame = -1;
+    syncTest.lastMismatchSummary.clear();
+    syncTest.lastDumpPath.clear();
+    syncTest.records.clear();
+
+    GGPOSessionCallbacks cb = { 0 };
+    cb.begin_game = ggpo_begin_game_callback;
+    cb.advance_frame = ggpo_advance_frame_callback;
+    cb.load_game_state = ggpo_load_game_state_callback;
+    cb.save_game_state = ggpo_save_game_state_callback;
+    cb.free_buffer = ggpo_free_buffer;
+    cb.on_event = ggpo_on_event_callback;
+    cb.log_game_state = ggpo_log_game_state;
+
+    GGPOErrorCode result = ggpo_start_synctest(
+        &ggpo,
+        &cb,
+        "sf4e",
+        2,
+        sizeof(fPadSystem::Inputs),
+        syncTest.nCheckDistance
+    );
+    if (result != GGPO_OK) {
+        spdlog::error("GGPO sync test session could not start: {}", (int)result);
+        ggpo = nullptr;
+        return;
+    }
+
+    localPlayerHandle = GGPO_INVALID_HANDLE;
+    for (int i = 0; i < MAX_SF4E_PROTOCOL_USERS; i++) {
+        players[i].type = GGPO_PLAYERTYPE_SPECTATOR;
+        players[i].handle = GGPO_INVALID_HANDLE;
+    }
+    for (int i = 0; i < 2; i++) {
+        GGPOPlayer player;
+        player.size = sizeof(GGPOPlayer);
+        player.type = GGPO_PLAYERTYPE_LOCAL;
+        player.player_num = i + 1;
+        players[i].type = GGPO_PLAYERTYPE_LOCAL;
+        result = ggpo_add_player(ggpo, &player, &players[i].handle);
+        if (!GGPO_SUCCEEDED(result)) {
+            spdlog::error("GGPO sync test could not add player {}: {}", i + 1, (int)result);
+            continue;
+        }
+        if (localPlayerHandle == GGPO_INVALID_HANDLE) {
+            localPlayerHandle = players[i].handle;
+        }
+    }
+
+    syncTest.bActive = true;
+
+    // Mirror the online battle start so the sync test exercises the
+    // same flow that real sessions do.
+    nNextBattleStartFlowTarget = BF__MATCH_START;
+    bUpdateAllowed = false;
+    fVsBattle::bTerminateOnNextLeftBattle = true;
+    fVsBattle::bOverrideNextRandomSeed = true;
+    fVsBattle::nextMatchRandomSeed = localRand();
+    spdlog::info("Sync test started (check distance {})", syncTest.nCheckDistance);
+}
+
+static bool GetDesyncDumpDir(std::wstring& out) {
+    PWSTR path = nullptr;
+    if (SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, NULL, &path) != S_OK) {
+        return false;
+    }
+    std::wstring dir(path);
+    CoTaskMemFree(path);
+    dir += L"\\sf4e";
+    CreateDirectoryW(dir.c_str(), NULL);
+    dir += L"\\desync";
+    CreateDirectoryW(dir.c_str(), NULL);
+    out = dir;
+    return true;
+}
+
+static void CaptureBlob(fSystem::SaveState* state, fSystem::SyncTest::FrameRecord& rec) {
+    size_t total = 0;
+    for (auto iter = state->keys.begin(); iter != state->keys.end(); iter++) {
+        total += fKey::GetMementoDataSize(&iter->second);
+    }
+    total += sizeof(fSystem::SaveState::GlobalData);
+
+    rec.blob.clear();
+    rec.blob.reserve(total);
+    rec.ranges.clear();
+    rec.ranges.reserve(state->keys.size() + 1);
+    for (auto iter = state->keys.begin(); iter != state->keys.end(); iter++) {
+        const rKey& keyCopy = iter->second;
+        size_t size = fKey::GetMementoDataSize(&keyCopy);
+        rec.ranges.push_back(std::make_pair((uint32_t)rec.blob.size(), (uint32_t)size));
+        if (size > 0 && keyCopy.mementos != nullptr) {
+            const uint8_t* p = (const uint8_t*)keyCopy.mementos;
+            rec.blob.insert(rec.blob.end(), p, p + size);
+        }
+    }
+    rec.ranges.push_back(std::make_pair((uint32_t)rec.blob.size(), (uint32_t)sizeof(fSystem::SaveState::GlobalData)));
+    const uint8_t* g = (const uint8_t*)&state->d;
+    rec.blob.insert(rec.blob.end(), g, g + sizeof(fSystem::SaveState::GlobalData));
+}
+
+static size_t FirstDifference(const uint8_t* a, const uint8_t* b, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        if (a[i] != b[i]) {
+            return i;
+        }
+    }
+    return len;
+}
+
+static void WriteDesyncDump(int frame, const fSystem::SyncTest::FrameRecord& original, const fSystem::SyncTest::FrameRecord& replay) {
+    std::wstring dir;
+    if (!GetDesyncDumpDir(dir)) {
+        spdlog::error("Sync test: could not resolve the dump directory");
+        return;
+    }
+
+    wchar_t name[MAX_PATH];
+    swprintf_s(name, MAX_PATH, L"%s\\synctest-%06d-original.bin", dir.c_str(), frame);
+    std::ofstream(name, std::ios::binary).write((const char*)original.blob.data(), original.blob.size());
+    swprintf_s(name, MAX_PATH, L"%s\\synctest-%06d-replay.bin", dir.c_str(), frame);
+    std::ofstream(name, std::ios::binary).write((const char*)replay.blob.data(), replay.blob.size());
+
+    swprintf_s(name, MAX_PATH, L"%s\\synctest-%06d-index.txt", dir.c_str(), frame);
+    std::ofstream index(name);
+    index << "frame " << frame << "\n";
+    index << "layout: entries are [offset, len) into the .bin files; the last entry is the global (non-memento) data\n";
+    index << "orig_total=" << std::hex << original.checksum << " replay_total=" << replay.checksum << std::dec << "\n\n";
+
+    size_t n = original.ranges.size() < replay.ranges.size() ? original.ranges.size() : replay.ranges.size();
+    for (size_t i = 0; i < n; i++) {
+        uint32_t oOff = original.ranges[i].first, oLen = original.ranges[i].second;
+        uint32_t rOff = replay.ranges[i].first, rLen = replay.ranges[i].second;
+        bool isGlobal = (i == original.ranges.size() - 1);
+        index << (isGlobal ? "global" : "key") << " " << i;
+        if (!isGlobal && i < original.keys.size()) {
+            index << " key=" << original.keys[i].key << " mementoable=" << original.keys[i].mementoable
+                  << " orig_cs=" << std::hex << original.keys[i].checksum;
+            if (i < replay.keys.size()) {
+                index << " replay_cs=" << replay.keys[i].checksum;
+            }
+            index << std::dec;
+        }
+        index << " offset=" << oOff << " len=" << oLen;
+        if (oLen != rLen) {
+            index << " DIFF (length " << oLen << " vs " << rLen << ")\n";
+            continue;
+        }
+        if (oOff + oLen > original.blob.size() || rOff + rLen > replay.blob.size()) {
+            index << " (blob truncated)\n";
+            continue;
+        }
+        size_t d = FirstDifference(original.blob.data() + oOff, replay.blob.data() + rOff, oLen);
+        if (d == oLen) {
+            index << " same\n";
+        }
+        else {
+            index << " DIFF first_diff_at=+" << d << "\n";
+        }
+    }
+
+    char narrow[MAX_PATH];
+    WideCharToMultiByte(CP_UTF8, 0, dir.c_str(), -1, narrow, MAX_PATH, NULL, NULL);
+    fSystem::syncTest.lastDumpPath = narrow;
+    spdlog::error("Sync test: state dump written to {}", narrow);
+}
+
+void fSystem::SyncTestVerify(int frame, SaveState* state) {
+    SyncTest::FrameRecord rec;
+    rec.checksum = state->checksum;
+    rec.globalChecksum = state->globalChecksum;
+    rec.keys = state->keyChecksums;
+    if (syncTest.bDumpOnMismatch) {
+        CaptureBlob(state, rec);
+    }
+
+    auto existing = syncTest.records.find(frame);
+    if (existing == syncTest.records.end()) {
+        // First time this frame is saved: the original pass.
+        syncTest.records.emplace(frame, std::move(rec));
+    }
+    else {
+        // Second time: the replay pass. The two must be byte-identical.
+        const SyncTest::FrameRecord& original = existing->second;
+        if (original.checksum == rec.checksum) {
+            syncTest.nFramesVerified++;
+        }
+        else {
+            syncTest.nMismatches++;
+            syncTest.nLastMismatchFrame = frame;
+
+            std::ostringstream summary;
+            int differing = 0;
+            size_t n = original.keys.size() < rec.keys.size() ? original.keys.size() : rec.keys.size();
+            summary << "frame " << frame << ": ";
+            if (original.keys.size() != rec.keys.size()) {
+                summary << "key count " << original.keys.size() << " vs " << rec.keys.size() << "; ";
+            }
+            for (size_t i = 0; i < n; i++) {
+                if (original.keys[i].checksum != rec.keys[i].checksum) {
+                    if (differing < 8) {
+                        summary << "key#" << i << "(obj " << original.keys[i].mementoable << ") ";
+                    }
+                    differing++;
+                }
+            }
+            summary << differing << " of " << n << " keys differ";
+            if (original.globalChecksum != rec.globalChecksum) {
+                summary << ", global data differs";
+            }
+            syncTest.lastMismatchSummary = summary.str();
+            spdlog::error("Sync test MISMATCH: {}", syncTest.lastMismatchSummary);
+
+            if (syncTest.bDumpOnMismatch) {
+                WriteDesyncDump(frame, original, rec);
+            }
+        }
+        syncTest.records.erase(existing);
+    }
+
+    // Drop anything that can no longer be replayed.
+    int oldest = frame - (2 * syncTest.nCheckDistance + NUM_SAVE_STATES + 8);
+    while (!syncTest.records.empty() && syncTest.records.begin()->first < oldest) {
+        syncTest.records.erase(syncTest.records.begin());
+    }
 }
