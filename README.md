@@ -2,6 +2,22 @@
 
 A process-inspection and modification tool for the Steam release of _Ultra Street Fighter 4_.
 
+## About this fork
+
+This repository is a fork of [sf4e](https://codeberg.org/adanducci/sf4e), created and
+developed by **Anthony Danducci** ([adanducci](https://codeberg.org/adanducci)). All of the
+foundational work is theirs: the reverse-engineered engine API (`src/Dimps`), the
+memento-based save states, the GGPO integration, the session protocol, the launcher and
+the overlay. The full upstream commit history is preserved here.
+
+The goal of this fork is to take that foundation the rest of the way to a clean,
+easy-to-install rollback netcode mod for players: provable sync, an in-game match flow,
+connectivity without port forwarding, and packaged releases. `src/Dimps` is kept as an
+unmodified mirror of upstream so offset fixes can be pulled in directly.
+
+Upstream remains the authoritative source for the engine research. Please report engine
+or offset findings there as well, and see the original [CONTRIBUTING.md](CONTRIBUTING.md).
+
 [TOC]
 
 ## Running
