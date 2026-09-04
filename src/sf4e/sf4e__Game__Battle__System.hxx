@@ -186,10 +186,11 @@ namespace sf4e {
 				static bool bSkipResetAfterMemento;
 
 				// The System restores first, which includes the Scaleform action
-				// pool, and every other unit restores on top of it. If one of
-				// those later restores drives Scaleform, it perturbs the pool
-				// after it was set. Set to defer the pool's restore until every
-				// other unit has finished.
+				// pool, and every other unit restores on top of it. One of those
+				// later restores drives Scaleform and perturbs the pool after it
+				// was set, which measurably broke the round trip. Deferring the
+				// pool until every other unit has finished fixes it, so that is
+				// the default; the flag remains for A/B measurement.
 				static bool bRestoreGfxLast;
 
 				struct StateSnapshotMeta {

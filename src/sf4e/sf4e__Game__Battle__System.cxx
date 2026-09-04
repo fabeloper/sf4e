@@ -85,7 +85,7 @@ bool fSystem::extendedLoadRequest = false;
 bool fSystem::extendedSaveRequest = false;
 bool fSystem::idempotenceCheckRequest = false;
 bool fSystem::bSkipResetAfterMemento = false;
-bool fSystem::bRestoreGfxLast = false;
+bool fSystem::bRestoreGfxLast = true;
 
 // Set while a deferred Scaleform restore is outstanding. Points into the
 // memento being restored, which stays alive for the whole restore.
@@ -1312,12 +1312,15 @@ static int RunIdempotencePass(
         fSystem::SaveState::Load(baseline);
     }
 
+    bool previousSkipReset = fSystem::bSkipResetAfterMemento;
+    bool previousGfxLast = fSystem::bRestoreGfxLast;
+
     fSystem::SaveState::Save(a);
     fSystem::bSkipResetAfterMemento = skipResetAfterMemento;
     fSystem::bRestoreGfxLast = restoreGfxLast;
     fSystem::SaveState::Load(a);
-    fSystem::bSkipResetAfterMemento = false;
-    fSystem::bRestoreGfxLast = false;
+    fSystem::bSkipResetAfterMemento = previousSkipReset;
+    fSystem::bRestoreGfxLast = previousGfxLast;
     fSystem::SaveState::Save(b);
 
     int differing = CompareSaves(a, b);
@@ -1464,10 +1467,9 @@ void fSystem::RunIdempotenceCheck() {
         int result;
     };
     Variant variants[] = {
-        { "normal", false, false, -1 },
-        { "ResetAfterMemento skipped", true, false, -1 },
-        { "Scaleform pool restored last", false, true, -1 },
-        { "both", true, true, -1 },
+        { "current default (Scaleform last)", false, true, -1 },
+        { "upstream order (Scaleform inline)", false, false, -1 },
+        { "Scaleform last, no ResetAfterMemento", true, true, -1 },
     };
 
     for (int i = 0; i < (int)(sizeof(variants) / sizeof(variants[0])); i++) {
@@ -1479,13 +1481,52 @@ void fSystem::RunIdempotenceCheck() {
         );
     }
 
+    // Does a second round trip change anything more? If restoring a restored
+    // state reproduces it exactly, the first restore is normalising something
+    // rather than losing it, and only frames that never went through a restore
+    // disagree. That is a different bug with a different fix, so measure it.
+    int firstTrip = -1;
+    int secondTrip = -1;
+    {
+        int slots[3] = { -1, -1, -1 };
+        int found = 0;
+        for (int i = 0; i < NUM_SAVE_STATES && found < 3; i++) {
+            if (!saveStates[i].used) {
+                slots[found++] = i;
+            }
+        }
+        if (found == 3) {
+            SaveState* x = &saveStates[slots[0]];
+            SaveState* y = &saveStates[slots[1]];
+            SaveState* z = &saveStates[slots[2]];
+            spdlog::info("--- pass: convergence (two round trips) ---");
+            SaveState::Load(baseline);
+            SaveState::Save(x);
+            SaveState::Load(x);
+            SaveState::Save(y);
+            SaveState::Load(y);
+            SaveState::Save(z);
+            spdlog::info("  first round trip:");
+            firstTrip = CompareSaves(x, y);
+            spdlog::info("  second round trip:");
+            secondTrip = CompareSaves(y, z);
+            SaveState::Free(x);
+            SaveState::Free(y);
+            SaveState::Free(z);
+        }
+    }
+
     // Leave the battle on the state we started from.
     SaveState::Load(baseline);
     SaveState::Free(baseline);
 
     spdlog::info("VERDICT (keys differing out of 88, lower is better):");
     for (int i = 0; i < (int)(sizeof(variants) / sizeof(variants[0])); i++) {
-        spdlog::info("  {:<32} {}", variants[i].label, variants[i].result);
+        spdlog::info("  {:<38} {}", variants[i].label, variants[i].result);
+    }
+    spdlog::info("  {:<38} {} then {}", "convergence (1st then 2nd trip)", firstTrip, secondTrip);
+    if (secondTrip == 0 && firstTrip > 0) {
+        spdlog::info("  -> state converges after one restore: the restore normalises, it does not lose");
     }
 }
 
