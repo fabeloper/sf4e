@@ -177,6 +177,14 @@ namespace sf4e {
 				static bool idempotenceCheckRequest;
 				static void RunIdempotenceCheck();
 
+				// RestoreAllFromInternalMementos calls Chara::Actor's
+				// ResetAfterMemento on both actors, which recomputes derived
+				// state. If that recomputation doesn't reproduce what was
+				// saved, a restored actor differs from one that was never
+				// rolled back. Set to skip those calls for a controlled
+				// comparison.
+				static bool bSkipResetAfterMemento;
+
 				struct StateSnapshotMeta {
 					bool sent;
 					bool confirmed;

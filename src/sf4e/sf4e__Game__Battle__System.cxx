@@ -84,6 +84,7 @@ rKey::MementoID GGPO_MEMENTO_ID = { 1, 1 };
 bool fSystem::extendedLoadRequest = false;
 bool fSystem::extendedSaveRequest = false;
 bool fSystem::idempotenceCheckRequest = false;
+bool fSystem::bSkipResetAfterMemento = false;
 GameMementoKey::MementoID fSystem::mementoLoadRequest = { 0xffffffff, 0xffffffff };
 GameMementoKey::MementoID fSystem::mementoSaveRequest = { 0xffffffff, 0xffffffff };
 
@@ -463,8 +464,10 @@ void fSystem::RestoreAllFromInternalMementos(rSystem* system, rKey::MementoID * 
         TrainingManager::publicMethods.RestoreFromInternalMementoKey
         )(id);
 
-    CharaActor::staticMethods.ResetAfterMemento((charaUnit->*CharaUnit::publicMethods.GetActorByIndex)(0));
-    CharaActor::staticMethods.ResetAfterMemento((charaUnit->*CharaUnit::publicMethods.GetActorByIndex)(1));
+    if (!bSkipResetAfterMemento) {
+        CharaActor::staticMethods.ResetAfterMemento((charaUnit->*CharaUnit::publicMethods.GetActorByIndex)(0));
+        CharaActor::staticMethods.ResetAfterMemento((charaUnit->*CharaUnit::publicMethods.GetActorByIndex)(1));
+    }
 
     // Intentionally omit the reset of the Network unit. All in-game inputs
     // are passed into and read back out of the network unit, regardless
@@ -1249,11 +1252,16 @@ static std::string DescribeKey(size_t index, const fSystem::SaveState::KeyChecks
     return out.str();
 }
 
-void fSystem::RunIdempotenceCheck() {
+static int CompareSaves(fSystem::SaveState* a, fSystem::SaveState* b);
+
+// Saves, restores, saves again and reports what changed. Nothing simulates in
+// between, so any difference is state the restore failed to reproduce.
+// Returns the number of differing keys, or -1 if the pass couldn't run.
+static int RunIdempotencePass(const char* label, bool skipResetAfterMemento) {
     int slotA = -1;
     int slotB = -1;
     for (int i = 0; i < NUM_SAVE_STATES && slotB < 0; i++) {
-        if (saveStates[i].used) {
+        if (fSystem::saveStates[i].used) {
             continue;
         }
         if (slotA < 0) {
@@ -1265,36 +1273,29 @@ void fSystem::RunIdempotenceCheck() {
     }
     if (slotB < 0) {
         spdlog::error("Idempotence check: need two free save slots");
-        return;
+        return -1;
     }
 
-    SaveState* a = &saveStates[slotA];
-    SaveState* b = &saveStates[slotB];
+    fSystem::SaveState* a = &fSystem::saveStates[slotA];
+    fSystem::SaveState* b = &fSystem::saveStates[slotB];
 
-    SaveState::Save(a);
-    SaveState::Load(a);
-    SaveState::Save(b);
+    spdlog::info("--- pass: {} ---", label);
 
-    spdlog::info("=== Save/load idempotence check ===");
+    fSystem::SaveState::Save(a);
+    fSystem::bSkipResetAfterMemento = skipResetAfterMemento;
+    fSystem::SaveState::Load(a);
+    fSystem::bSkipResetAfterMemento = false;
+    fSystem::SaveState::Save(b);
 
-    // Print where each part of the System's memento lives, so a reported byte
-    // offset can be attributed to a subsystem instead of guessed at.
-    {
-        size_t base = sizeof(rSystem::Memento);
-        spdlog::info(
-            "System memento layout: game Memento = {} bytes, then AdditionalMemento ({} bytes)",
-            base,
-            sizeof(AdditionalMemento)
-        );
-        spdlog::info(
-            "  network +{}, announce +{}, playerNotices +{}, gfxApp +{}, updateCore +{}",
-            base + offsetof(AdditionalMemento, network),
-            base + offsetof(AdditionalMemento, announce),
-            base + offsetof(AdditionalMemento, playerNotices),
-            base + offsetof(AdditionalMemento, gfxApp),
-            base + offsetof(AdditionalMemento, updateCore)
-        );
-    }
+    int differing = CompareSaves(a, b);
+
+    fSystem::SaveState::Free(a);
+    fSystem::SaveState::Free(b);
+    return differing;
+}
+
+static int CompareSaves(fSystem::SaveState* a, fSystem::SaveState* b) {
+    int differingTotal = 0;
     if (a->checksum == b->checksum) {
         spdlog::info(
             "PASS: {} keys round-tripped exactly (checksum {:08x})",
@@ -1381,10 +1382,53 @@ void fSystem::RunIdempotenceCheck() {
             spdlog::error("  global battle-flow data differs");
         }
         spdlog::error("  {} of {} keys differ", differing, n);
+        differingTotal = differing;
+    }
+    return differingTotal;
+}
+
+void fSystem::RunIdempotenceCheck() {
+    spdlog::info("=== Save/load idempotence check ===");
+
+    // Print where each part of the System's memento lives, so a reported byte
+    // offset can be attributed to a subsystem instead of guessed at.
+    {
+        size_t base = sizeof(rSystem::Memento);
+        spdlog::info(
+            "System memento layout: game Memento = {} bytes, then AdditionalMemento ({} bytes)",
+            base,
+            sizeof(AdditionalMemento)
+        );
+        spdlog::info(
+            "  network +{}, announce +{}, playerNotices +{}, gfxApp +{}, updateCore +{}",
+            base + offsetof(AdditionalMemento, network),
+            base + offsetof(AdditionalMemento, announce),
+            base + offsetof(AdditionalMemento, playerNotices),
+            base + offsetof(AdditionalMemento, gfxApp),
+            base + offsetof(AdditionalMemento, updateCore)
+        );
     }
 
-    SaveState::Free(a);
-    SaveState::Free(b);
+    // Run the same round trip twice, differing only in whether the actors'
+    // ResetAfterMemento runs. If the differences vanish without it, that call
+    // is recomputing derived state into something other than what was saved.
+    int withReset = RunIdempotencePass("normal (ResetAfterMemento called)", false);
+    int withoutReset = RunIdempotencePass("ResetAfterMemento skipped", true);
+
+    if (withReset < 0 || withoutReset < 0) {
+        return;
+    }
+    spdlog::info(
+        "VERDICT: {} keys differ normally, {} with ResetAfterMemento skipped",
+        withReset,
+        withoutReset
+    );
+    if (withReset > withoutReset) {
+        spdlog::info("  -> ResetAfterMemento accounts for {} of them", withReset - withoutReset);
+    }
+    else if (withoutReset >= withReset && withReset > 0) {
+        spdlog::info("  -> ResetAfterMemento is not the cause; the memento itself is incomplete");
+    }
 }
 
 void fSystem::SyncTestVerify(int frame, SaveState* state) {
