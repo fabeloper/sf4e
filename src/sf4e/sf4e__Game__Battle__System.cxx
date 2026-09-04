@@ -236,7 +236,7 @@ int fSystem::RestoreFromMemento(Memento* m, GameMementoKey::MementoID* id) {
         }
         else if (strcmp(name, "HUD TRAINING") == 0) {
             if (*HudUnit::GetTraining(hud)) {
-                *rHud::Training::Unit::GetHudTrainingUpdateTask(*HudUnit::GetTraining(hud)) = nullptr;
+                *rHud::Training::Unit::GetHudTrainingUpdateTask(*HudUnit::GetTraining(hud)) = cursor;
             }
         }
     }
