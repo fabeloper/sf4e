@@ -71,6 +71,8 @@ target_link_libraries(
 add_library(sf4e STATIC
     "src/sf4e/sf4e.hxx"
     "src/sf4e/sf4e.cxx"
+    "src/sf4e/sf4e__Crash.hxx"
+    "src/sf4e/sf4e__Crash.cxx"
     "src/sf4e/sf4e__Event.hxx"
     "src/sf4e/sf4e__Event.cxx"
     "src/sf4e/sf4e__Game.hxx"
@@ -102,7 +104,7 @@ add_library(sf4e STATIC
 )
 target_link_libraries(
     sf4e
-    PRIVATE ${LIB_DETOURS} Session "Kernel32" "ws2_32" "Mswsock" "AdvApi32" "Shlwapi" "Bcrypt" "Xinput9_1_0"
+    PRIVATE ${LIB_DETOURS} Session "Kernel32" "ws2_32" "Mswsock" "AdvApi32" "Shlwapi" "Bcrypt" "Xinput9_1_0" "Dbghelp"
     PUBLIC imgui::imgui nlohmann_json::nlohmann_json spdlog::spdlog GameNetworkingSockets::shared ggpo::GGPO
 )
 

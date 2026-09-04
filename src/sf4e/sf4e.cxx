@@ -7,6 +7,7 @@
 #include "../Dimps/Dimps__Platform.hxx"
 
 #include "sf4e.hxx"
+#include "sf4e__Crash.hxx"
 #include "sf4e__Event.hxx"
 #include "sf4e__Game.hxx"
 #include "sf4e__GameEvents.hxx"
@@ -224,6 +225,7 @@ void sf4e::Install(HINSTANCE hinstDll, const sf4e::Payload* const payload) {
 
 	localRand.seed(time(NULL));
 
+	Crash::Install();
 	Event::Install();
 	Game::Install();
 	GameEvents::Install();
