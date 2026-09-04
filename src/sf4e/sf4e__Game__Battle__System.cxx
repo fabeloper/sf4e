@@ -1019,6 +1019,14 @@ void fSystem::SaveState::ComputeChecksum(SaveState* s) {
         kc.key = iter->first;
         kc.mementoable = keyCopy.mementoableObject;
         kc.size = (uint32_t)fKey::GetMementoDataSize(&keyCopy);
+
+        // Number pointers within each key independently. Sharing one sequence
+        // across all keys sounded better -- it would catch two objects pointing
+        // at the same thing -- but it makes every key's checksum depend on how
+        // many distinct pointers the earlier keys happened to hold. One real
+        // difference early then cascades into every later key, reporting them
+        // as changed when their bytes are identical.
+        normalizer.Reset();
         kc.checksum = fKey::ChecksumNormalized(&keyCopy, normalizer);
         kc.checksumRaw = fKey::Checksum(&keyCopy);
         s->keyChecksums.push_back(kc);
@@ -1026,6 +1034,7 @@ void fSystem::SaveState::ComputeChecksum(SaveState* s) {
         totalRaw = Mix(totalRaw, kc.checksumRaw);
     }
 
+    normalizer.Reset();
     s->globalChecksum = HashGlobalData(s->d, normalizer);
     s->checksum = Mix(total, s->globalChecksum);
     s->checksumRaw = Mix(totalRaw, s->globalChecksum);
@@ -1284,70 +1293,70 @@ void fSystem::RunIdempotenceCheck() {
             a->keyChecksums.size(),
             b->keyChecksums.size()
         );
-        int detailed = 0;
+        int sampleBudget = 32;
         for (size_t i = 0; i < n; i++) {
             if (a->keyChecksums[i].checksum == b->keyChecksums[i].checksum) {
                 continue;
             }
             differing++;
-            spdlog::error(
-                "  {} size={} {:08x} -> {:08x}",
-                DescribeKey(i, a->keyChecksums[i]),
-                a->keyChecksums[i].size,
-                a->keyChecksums[i].checksum,
-                b->keyChecksums[i].checksum
-            );
 
-            // Show the actual bytes for the first few, tagging each word as a
-            // heap pointer or a plain value. Pointers moving is expected; plain
-            // values changing is state the restore failed to reproduce.
-            if (detailed >= 6) {
-                continue;
-            }
-            detailed++;
             const rKey& ka = a->keys[i].second;
             const rKey& kb = b->keys[i].second;
-            if (a->keys[i].first != b->keys[i].first) {
-                spdlog::error("      (key identity changed; skipping byte diff)");
-                continue;
-            }
             size_t sizeA = fKey::GetMementoDataSize(&ka);
             size_t sizeB = fKey::GetMementoDataSize(&kb);
-            if (sizeA != sizeB || sizeA == 0 || ka.mementos == nullptr || kb.mementos == nullptr) {
-                spdlog::error("      (memento size changed: {} -> {})", sizeA, sizeB);
-                continue;
-            }
+            bool comparable =
+                a->keys[i].first == b->keys[i].first &&
+                sizeA == sizeB && sizeA > 0 &&
+                ka.mementos != nullptr && kb.mementos != nullptr;
 
+            // Count every differing word, splitting moved heap addresses from
+            // changed values. Addresses moving is expected after a restore;
+            // changed values are state the restore failed to reproduce.
             const uint32_t* wa = (const uint32_t*)ka.mementos;
             const uint32_t* wb = (const uint32_t*)kb.mementos;
-            size_t words = sizeA / 4;
-            int shown = 0;
+            size_t words = comparable ? sizeA / 4 : 0;
             int ptrWords = 0;
             int valWords = 0;
             for (size_t w = 0; w < words; w++) {
                 if (wa[w] == wb[w]) {
                     continue;
                 }
-                bool pa = sf4e::Game::Hash::PointerNormalizer::IsHeapPointer(wa[w]);
-                bool pb = sf4e::Game::Hash::PointerNormalizer::IsHeapPointer(wb[w]);
-                if (pa && pb) {
+                if (sf4e::Game::Hash::PointerNormalizer::IsHeapPointer(wa[w]) &&
+                    sf4e::Game::Hash::PointerNormalizer::IsHeapPointer(wb[w])) {
                     ptrWords++;
                 }
                 else {
                     valWords++;
                 }
-                if (shown < 8) {
-                    spdlog::error(
-                        "      +{:<6} {:08x} -> {:08x}  [{}]",
-                        w * 4,
-                        wa[w],
-                        wb[w],
-                        (pa && pb) ? "ptr" : ((pa || pb) ? "ptr/val" : "VALUE")
-                    );
-                    shown++;
-                }
             }
-            spdlog::error("      differing words: {} pointer, {} value", ptrWords, valWords);
+
+            spdlog::error(
+                "  {} size={} {:08x} -> {:08x}  ({} ptr, {} VALUE words differ)",
+                DescribeKey(i, a->keyChecksums[i]),
+                a->keyChecksums[i].size,
+                a->keyChecksums[i].checksum,
+                b->keyChecksums[i].checksum,
+                ptrWords,
+                valWords
+            );
+            if (!comparable) {
+                spdlog::error("      (buffers not comparable: {} vs {} bytes)", sizeA, sizeB);
+                continue;
+            }
+
+            int shown = 0;
+            for (size_t w = 0; w < words && shown < 4 && sampleBudget > 0; w++) {
+                if (wa[w] == wb[w]) {
+                    continue;
+                }
+                if (sf4e::Game::Hash::PointerNormalizer::IsHeapPointer(wa[w]) &&
+                    sf4e::Game::Hash::PointerNormalizer::IsHeapPointer(wb[w])) {
+                    continue;
+                }
+                spdlog::error("      +{:<7} {:08x} -> {:08x}", w * 4, wa[w], wb[w]);
+                shown++;
+                sampleBudget--;
+            }
         }
         if (a->globalChecksum != b->globalChecksum) {
             spdlog::error("  global battle-flow data differs");
