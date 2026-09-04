@@ -371,11 +371,13 @@ void fSystem::CloseBattle() {
 
     if (syncTest.bActive) {
         spdlog::info(
-            "Sync test finished: {} frames verified, {} mismatches (last @ {}), {} raw-byte differences",
+            "Sync test finished: {} frames verified, {} state mismatches (last @ {}), {} raw-byte differences, {} GAMEPLAY divergences (last @ {})",
             syncTest.nFramesVerified,
             syncTest.nMismatches,
             syncTest.nLastMismatchFrame,
-            syncTest.nRawMismatches
+            syncTest.nRawMismatches,
+            syncTest.nGameplayMismatches,
+            syncTest.nLastGameplayMismatchFrame
         );
     }
     syncTest.bActive = false;
@@ -793,9 +795,16 @@ void fSystem::CaptureSnapshot(rSystem* src) {
     if (iter != snapshotMap.end()) {
         snapshotMap.erase(iter);
     }
-    
+
     StateSnapshot snapshot;
-    snapshot.frameIdx = frameIdx;
+    BuildSnapshot(src, snapshot);
+
+    StateSnapshotMeta meta{ false, false };
+    snapshotMap.emplace(frameIdx, std::make_pair(std::move(snapshot), meta));
+}
+
+void fSystem::BuildSnapshot(rSystem* src, StateSnapshot& snapshot) {
+    snapshot.frameIdx = rSystem::GetNumFramesSimulated_FixedPoint(src)->integral;
 
     CharaActor::__publicMethods& methods = CharaActor::publicMethods;
     CharaUnit* lpCharaUnit = (src->*rSystem::publicMethods.GetCharaUnit)();
@@ -825,8 +834,6 @@ void fSystem::CaptureSnapshot(rSystem* src) {
         (a->*methods.GetComboDamage)(&snapshot.chara[i].combodamage);
         (a->*methods.GetDamage)(&snapshot.chara[i].damage);
     }
-    StateSnapshotMeta meta{ false, false };
-    snapshotMap.emplace(frameIdx, std::make_pair(std::move(snapshot), meta));
 }
 
 void CopyIntoPlace(fSystem::SaveState* src) {
@@ -1101,6 +1108,8 @@ void fSystem::StartSyncTest() {
     syncTest.nFramesVerified = 0;
     syncTest.nMismatches = 0;
     syncTest.nRawMismatches = 0;
+    syncTest.nGameplayMismatches = 0;
+    syncTest.nLastGameplayMismatchFrame = -1;
     syncTest.nLastMismatchFrame = -1;
     syncTest.nDumpsWritten = 0;
     syncTest.lastMismatchSummary.clear();
@@ -1566,6 +1575,7 @@ void fSystem::SyncTestVerify(int frame, SaveState* state) {
     rec.checksumRaw = state->checksumRaw;
     rec.globalChecksum = state->globalChecksum;
     rec.keys = state->keyChecksums;
+    BuildSnapshot(rSystem::staticMethods.GetSingleton(), rec.snapshot);
     if (mayDump) {
         CaptureBlob(state, rec);
     }
@@ -1582,6 +1592,27 @@ void fSystem::SyncTestVerify(int frame, SaveState* state) {
         const SyncTest::FrameRecord& original = existing->second;
         if (original.checksumRaw != rec.checksumRaw) {
             syncTest.nRawMismatches++;
+        }
+
+        // The verdict that matters. A save state can differ in engine
+        // bookkeeping while both sides still play the same match; if the
+        // observable state differs, they do not.
+        if (memcmp(&original.snapshot, &rec.snapshot, sizeof(StateSnapshot)) != 0) {
+            syncTest.nGameplayMismatches++;
+            syncTest.nLastGameplayMismatchFrame = frame;
+            if (syncTest.nGameplayMismatches <= 5 || (syncTest.nGameplayMismatches % 100) == 0) {
+                const StateSnapshot::CharaStateSnapshot& o = original.snapshot.chara[0];
+                const StateSnapshot::CharaStateSnapshot& r = rec.snapshot.chara[0];
+                spdlog::error(
+                    "Sync test GAMEPLAY divergence #{} @ frame {}: P1 status {}->{}, "
+                    "pos ({:.4f},{:.4f}) -> ({:.4f},{:.4f}), vit {}->{}",
+                    syncTest.nGameplayMismatches,
+                    frame,
+                    o.status, r.status,
+                    o.rootPos[0], o.rootPos[1], r.rootPos[0], r.rootPos[1],
+                    o.vit.integral, r.vit.integral
+                );
+            }
         }
 
         if (original.checksum == rec.checksum) {

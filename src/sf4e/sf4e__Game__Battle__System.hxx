@@ -137,6 +137,7 @@ namespace sf4e {
 						uint32_t checksum;
 						uint32_t checksumRaw;
 						uint32_t globalChecksum;
+						SessionProtocol::StateSnapshot snapshot;
 						std::vector<SaveState::KeyChecksum> keys;
 						// Concatenated memento buffers followed by the raw global
 						// data, only captured while dumps are still being written.
@@ -154,6 +155,13 @@ namespace sf4e {
 					// every save, so this is expected to be nonzero even when the
 					// simulation is perfectly deterministic.
 					int nRawMismatches = 0;
+					// Mismatches in observable gameplay state. This is the number
+					// that decides whether rollback is playable: a save state can
+					// differ in engine bookkeeping without the match diverging,
+					// but if this is nonzero the two sides are playing different
+					// games.
+					int nGameplayMismatches = 0;
+					int nLastGameplayMismatchFrame = -1;
 					int nLastMismatchFrame = -1;
 					// Dumps are ~2MB per frame per side. Without a cap a bad run
 					// fills the disk.
@@ -199,6 +207,15 @@ namespace sf4e {
 				};
 
 				static void CaptureSnapshot(Dimps::Game::Battle::System* src);
+
+				// Fills a snapshot of the state players actually observe:
+				// positions, status, health, meters and damage. Everything else
+				// in a save state is engine bookkeeping, so this is what has to
+				// match for a rollback to be correct in practice.
+				static void BuildSnapshot(
+					Dimps::Game::Battle::System* src,
+					SessionProtocol::StateSnapshot& out
+				);
 				static std::map<int, std::pair<SessionProtocol::StateSnapshot, StateSnapshotMeta>> snapshotMap;
 				static GGPOPlayerHandle localPlayerHandle;
 				static PlayerConnectionInfo players[MAX_SF4E_PROTOCOL_USERS];

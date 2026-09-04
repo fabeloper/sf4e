@@ -667,10 +667,11 @@ void DrawGGPOStatsOverlay(GGPOSession* ggpo, fSystem::PlayerConnectionInfo* play
 		// No remote player
 		if (fSystem::syncTest.bActive) {
 			Text(
-				"SYNC TEST  distance %d  verified %d  mismatches %d",
+				"SYNC TEST  dist %d  verified %d  state %d  GAMEPLAY %d",
 				fSystem::syncTest.nCheckDistance,
 				fSystem::syncTest.nFramesVerified,
-				fSystem::syncTest.nMismatches
+				fSystem::syncTest.nMismatches,
+				fSystem::syncTest.nGameplayMismatches
 			);
 			return;
 		}
@@ -1066,8 +1067,15 @@ void DrawSyncTestPanel() {
 	ImGui::TextDisabled("(in a battle; result goes to the log)");
 
 	if (st.bActive) {
-		Text("RUNNING  distance %d  verified %d  mismatches %d", st.nCheckDistance, st.nFramesVerified, st.nMismatches);
+		Text("RUNNING  distance %d  verified %d  state mismatches %d", st.nCheckDistance, st.nFramesVerified, st.nMismatches);
 		Text("Raw-byte differences (heap addresses, expected): %d", st.nRawMismatches);
+		// The one that decides whether rollback is playable.
+		ImGui::PushStyleColor(
+			ImGuiCol_Text,
+			st.nGameplayMismatches == 0 ? IM_COL32(120, 230, 140, 255) : IM_COL32(255, 80, 80, 255)
+		);
+		Text("GAMEPLAY divergences: %d", st.nGameplayMismatches);
+		ImGui::PopStyleColor();
 		if (st.nMismatches > 0) {
 			ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 80, 80, 255));
 			ImGui::TextWrapped("Last: %s", st.lastMismatchSummary.c_str());
