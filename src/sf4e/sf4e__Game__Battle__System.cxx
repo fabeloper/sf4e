@@ -90,6 +90,12 @@ bool fSystem::bRestoreGfxLast = true;
 // Set while a deferred Scaleform restore is outstanding. Points into the
 // memento being restored, which stays alive for the whole restore.
 static const sf4e::Platform::GFxApp::AdditionalMemento* g_pendingGfxRestore = nullptr;
+
+// True only inside RestoreAllFromInternalMementos, which is the one caller
+// that applies a deferred Scaleform restore afterwards. RestoreFromMemento is
+// a detour, so it also runs for the game's own training-mode load, which never
+// reaches that code; deferring there would drop the restore entirely.
+static bool g_canDeferGfxRestore = false;
 GameMementoKey::MementoID fSystem::mementoLoadRequest = { 0xffffffff, 0xffffffff };
 GameMementoKey::MementoID fSystem::mementoSaveRequest = { 0xffffffff, 0xffffffff };
 
@@ -177,7 +183,7 @@ int fSystem::RestoreFromMemento(Memento* m, GameMementoKey::MementoID* id) {
         );
     }
 
-    if (bRestoreGfxLast) {
+    if (bRestoreGfxLast && g_canDeferGfxRestore) {
         g_pendingGfxRestore = &additional->gfxApp;
     }
     else {
@@ -440,6 +446,11 @@ void fSystem::RestoreAllFromInternalMementos(rSystem* system, rKey::MementoID * 
     void* (rSystem:: * GetUnitByIndex)(unsigned int) = rSystem::publicMethods.GetUnitByIndex;
     CharaUnit* charaUnit = (CharaUnit*)(system->*GetUnitByIndex)(rSystem::U_CHARA);
 
+    // Only this function applies a deferred Scaleform restore, so only this
+    // function may ask for one.
+    bool previousCanDefer = g_canDeferGfxRestore;
+    g_canDeferGfxRestore = true;
+
     (system->*rSystem::publicMethods.RestoreFromInternalMementoKey)(id);
     (charaUnit->*CharaUnit::publicMethods.RestoreFromInternalMementoKey)(id);
     (
@@ -480,6 +491,7 @@ void fSystem::RestoreAllFromInternalMementos(rSystem* system, rKey::MementoID * 
     }
 
     // Re-apply the Scaleform pool once nothing else can disturb it.
+    g_canDeferGfxRestore = previousCanDefer;
     if (g_pendingGfxRestore) {
         Platform::GFxApp::RestoreFromAdditionalMemento(
             Dimps::Platform::GFxApp::staticMethods.GetSingleton(),
