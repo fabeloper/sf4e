@@ -1002,6 +1002,12 @@ void fSystem::SaveState::ComputeChecksum(SaveState* s) {
     static sf4e::Game::Hash::PointerNormalizer normalizer;
     normalizer.Reset();
 
+    // Drop the block classification too. It is a cache of which 64KB blocks
+    // hold committed private memory, and the game commits more as it runs; a
+    // block judged "not heap" once and remembered would make a pointer hash
+    // raw in a later save and report a difference that isn't one.
+    sf4e::Game::Hash::PointerNormalizer::ResetBlockCache();
+
     s->keyChecksums.clear();
     s->keyChecksums.reserve(s->keys.size());
 
@@ -1278,6 +1284,7 @@ void fSystem::RunIdempotenceCheck() {
             a->keyChecksums.size(),
             b->keyChecksums.size()
         );
+        int detailed = 0;
         for (size_t i = 0; i < n; i++) {
             if (a->keyChecksums[i].checksum == b->keyChecksums[i].checksum) {
                 continue;
@@ -1290,6 +1297,57 @@ void fSystem::RunIdempotenceCheck() {
                 a->keyChecksums[i].checksum,
                 b->keyChecksums[i].checksum
             );
+
+            // Show the actual bytes for the first few, tagging each word as a
+            // heap pointer or a plain value. Pointers moving is expected; plain
+            // values changing is state the restore failed to reproduce.
+            if (detailed >= 6) {
+                continue;
+            }
+            detailed++;
+            const rKey& ka = a->keys[i].second;
+            const rKey& kb = b->keys[i].second;
+            if (a->keys[i].first != b->keys[i].first) {
+                spdlog::error("      (key identity changed; skipping byte diff)");
+                continue;
+            }
+            size_t sizeA = fKey::GetMementoDataSize(&ka);
+            size_t sizeB = fKey::GetMementoDataSize(&kb);
+            if (sizeA != sizeB || sizeA == 0 || ka.mementos == nullptr || kb.mementos == nullptr) {
+                spdlog::error("      (memento size changed: {} -> {})", sizeA, sizeB);
+                continue;
+            }
+
+            const uint32_t* wa = (const uint32_t*)ka.mementos;
+            const uint32_t* wb = (const uint32_t*)kb.mementos;
+            size_t words = sizeA / 4;
+            int shown = 0;
+            int ptrWords = 0;
+            int valWords = 0;
+            for (size_t w = 0; w < words; w++) {
+                if (wa[w] == wb[w]) {
+                    continue;
+                }
+                bool pa = sf4e::Game::Hash::PointerNormalizer::IsHeapPointer(wa[w]);
+                bool pb = sf4e::Game::Hash::PointerNormalizer::IsHeapPointer(wb[w]);
+                if (pa && pb) {
+                    ptrWords++;
+                }
+                else {
+                    valWords++;
+                }
+                if (shown < 8) {
+                    spdlog::error(
+                        "      +{:<6} {:08x} -> {:08x}  [{}]",
+                        w * 4,
+                        wa[w],
+                        wb[w],
+                        (pa && pb) ? "ptr" : ((pa || pb) ? "ptr/val" : "VALUE")
+                    );
+                    shown++;
+                }
+            }
+            spdlog::error("      differing words: {} pointer, {} value", ptrWords, valWords);
         }
         if (a->globalChecksum != b->globalChecksum) {
             spdlog::error("  global battle-flow data differs");
