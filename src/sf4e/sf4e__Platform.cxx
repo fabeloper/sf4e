@@ -1,3 +1,4 @@
+#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -148,7 +149,14 @@ int fMain::Initialize(void* a, void* b, void* c) {
                 ));
             }
             std::shared_ptr<spdlog::logger> logger(new spdlog::logger("sf4e", sinks.begin(), sinks.end()));
+
+            // Write through on every message. Buffered output is lost whenever
+            // the game is killed rather than quit, which is most of the time
+            // while debugging, and it silently truncated the tail of every log
+            // written so far. Diagnostics are worthless if they don't survive.
+            logger->flush_on(spdlog::level::trace);
             spdlog::set_default_logger(logger);
+            spdlog::flush_every(std::chrono::seconds(1));
             spdlog::info("Welcome to sf4e");
         }
         catch (const spdlog::spdlog_ex& ex)

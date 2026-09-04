@@ -1276,6 +1276,25 @@ void fSystem::RunIdempotenceCheck() {
     SaveState::Save(b);
 
     spdlog::info("=== Save/load idempotence check ===");
+
+    // Print where each part of the System's memento lives, so a reported byte
+    // offset can be attributed to a subsystem instead of guessed at.
+    {
+        size_t base = sizeof(rSystem::Memento);
+        spdlog::info(
+            "System memento layout: game Memento = {} bytes, then AdditionalMemento ({} bytes)",
+            base,
+            sizeof(AdditionalMemento)
+        );
+        spdlog::info(
+            "  network +{}, announce +{}, playerNotices +{}, gfxApp +{}, updateCore +{}",
+            base + offsetof(AdditionalMemento, network),
+            base + offsetof(AdditionalMemento, announce),
+            base + offsetof(AdditionalMemento, playerNotices),
+            base + offsetof(AdditionalMemento, gfxApp),
+            base + offsetof(AdditionalMemento, updateCore)
+        );
+    }
     if (a->checksum == b->checksum) {
         spdlog::info(
             "PASS: {} keys round-tripped exactly (checksum {:08x})",
