@@ -110,11 +110,13 @@ namespace sf4e {
 						GameMementoKey* key;
 						void* mementoable;
 						uint32_t size;
-						uint32_t checksum;
+						uint32_t checksum;    // pointer-normalized; compare this
+						uint32_t checksumRaw; // raw bytes; diagnostic only
 					};
 					std::vector<KeyChecksum> keyChecksums;
 					uint32_t globalChecksum = 0;
 					uint32_t checksum = 0;
+					uint32_t checksumRaw = 0;
 
 					SaveState();
 
@@ -133,10 +135,11 @@ namespace sf4e {
 				struct SyncTest {
 					struct FrameRecord {
 						uint32_t checksum;
+						uint32_t checksumRaw;
 						uint32_t globalChecksum;
 						std::vector<SaveState::KeyChecksum> keys;
 						// Concatenated memento buffers followed by the raw global
-						// data, only captured when bDumpOnMismatch is set.
+						// data, only captured while dumps are still being written.
 						std::vector<uint8_t> blob;
 						std::vector<std::pair<uint32_t, uint32_t>> ranges;
 					};
@@ -147,7 +150,15 @@ namespace sf4e {
 					int nCheckDistance = 1;
 					int nFramesVerified = 0;
 					int nMismatches = 0;
+					// Mismatches in the raw byte checksum. Heap addresses move on
+					// every save, so this is expected to be nonzero even when the
+					// simulation is perfectly deterministic.
+					int nRawMismatches = 0;
 					int nLastMismatchFrame = -1;
+					// Dumps are ~2MB per frame per side. Without a cap a bad run
+					// fills the disk.
+					int nMaxDumps = 3;
+					int nDumpsWritten = 0;
 					std::string lastMismatchSummary;
 					std::string lastDumpPath;
 					std::map<int, FrameRecord> records;

@@ -1058,12 +1058,13 @@ void DrawSyncTestPanel() {
 	);
 	if (st.bActive) {
 		Text("RUNNING  distance %d  verified %d  mismatches %d", st.nCheckDistance, st.nFramesVerified, st.nMismatches);
+		Text("Raw-byte differences (heap addresses, expected): %d", st.nRawMismatches);
 		if (st.nMismatches > 0) {
 			ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 80, 80, 255));
 			ImGui::TextWrapped("Last: %s", st.lastMismatchSummary.c_str());
 			ImGui::PopStyleColor();
 			if (!st.lastDumpPath.empty()) {
-				ImGui::TextWrapped("Dumps: %s", st.lastDumpPath.c_str());
+				ImGui::TextWrapped("Dumps (%d/%d): %s", st.nDumpsWritten, st.nMaxDumps, st.lastDumpPath.c_str());
 			}
 		}
 		return;
@@ -1081,6 +1082,9 @@ void DrawSyncTestPanel() {
 	}
 	ImGui::SliderInt("Check distance (frames)", &checkDistance, 1, GGPO_MAX_PREDICTION_FRAMES);
 	ImGui::Checkbox("Dump state on mismatch", &st.bDumpOnMismatch);
+	if (st.bDumpOnMismatch) {
+		ImGui::SliderInt("Max dumps (~4MB each)", &st.nMaxDumps, 1, 20);
+	}
 	if (Button("Arm sync test for next VS match")) {
 		fSystem::ArmSyncTest(checkDistance);
 	}

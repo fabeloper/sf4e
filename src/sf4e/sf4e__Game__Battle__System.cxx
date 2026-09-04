@@ -352,10 +352,11 @@ void fSystem::CloseBattle() {
 
     if (syncTest.bActive) {
         spdlog::info(
-            "Sync test finished: {} frames verified, {} mismatches (last @ {})",
+            "Sync test finished: {} frames verified, {} mismatches (last @ {}), {} raw-byte differences",
             syncTest.nFramesVerified,
             syncTest.nMismatches,
-            syncTest.nLastMismatchFrame
+            syncTest.nLastMismatchFrame,
+            syncTest.nRawMismatches
         );
     }
     syncTest.bActive = false;
@@ -961,12 +962,16 @@ void fSystem::SaveState::Save(SaveState* dst) {
     SaveState::ComputeChecksum(dst);
 }
 
-static uint32_t HashGlobalData(const fSystem::SaveState::GlobalData& d) {
+static uint32_t HashGlobalData(
+    const fSystem::SaveState::GlobalData& d,
+    sf4e::Game::Hash::PointerNormalizer& normalizer
+) {
     using sf4e::Game::Hash::Bytes;
     using sf4e::Game::Hash::Mix;
 
     // Hash field by field rather than the struct as a whole, so that
-    // compiler padding can never leak into the result.
+    // compiler padding can never leak into the result. The battle-flow
+    // callbacks are code addresses in the image, which are stable.
     uint32_t h = 0x474c4f42; // 'GLOB'
     h = Mix(h, d.CurrentBattleFlow);
     h = Mix(h, d.PreviousBattleFlow);
@@ -978,30 +983,39 @@ static uint32_t HashGlobalData(const fSystem::SaveState::GlobalData& d) {
     h = Bytes(&d.PreviousBattleFlowSubstateFrame, sizeof(FixedPoint), h);
     h = Mix(h, (uint32_t)d.BattleFlowSubstateCallable_aa9258);
     h = Mix(h, (uint32_t)d.BattleFlowCallback_CallEveryFrame_aa9254);
-    h = Bytes(&d.gameManager, sizeof(GameManager), h);
+    h = normalizer.Hash(&d.gameManager, sizeof(GameManager), h);
     return h;
 }
 
 void fSystem::SaveState::ComputeChecksum(SaveState* s) {
     using sf4e::Game::Hash::Mix;
 
+    // One normalizer for the whole save, so that a pointer shared between two
+    // keys normalizes to the same ordinal in both.
+    static sf4e::Game::Hash::PointerNormalizer normalizer;
+    normalizer.Reset();
+
     s->keyChecksums.clear();
     s->keyChecksums.reserve(s->keys.size());
 
     uint32_t total = 0x53463445; // 'SF4E'
+    uint32_t totalRaw = 0x53463445;
     for (auto iter = s->keys.begin(); iter != s->keys.end(); iter++) {
         const rKey& keyCopy = iter->second;
         KeyChecksum kc;
         kc.key = iter->first;
         kc.mementoable = keyCopy.mementoableObject;
         kc.size = (uint32_t)fKey::GetMementoDataSize(&keyCopy);
-        kc.checksum = fKey::Checksum(&keyCopy);
+        kc.checksum = fKey::ChecksumNormalized(&keyCopy, normalizer);
+        kc.checksumRaw = fKey::Checksum(&keyCopy);
         s->keyChecksums.push_back(kc);
         total = Mix(total, kc.checksum);
+        totalRaw = Mix(totalRaw, kc.checksumRaw);
     }
 
-    s->globalChecksum = HashGlobalData(s->d);
+    s->globalChecksum = HashGlobalData(s->d, normalizer);
     s->checksum = Mix(total, s->globalChecksum);
+    s->checksumRaw = Mix(totalRaw, s->globalChecksum);
 }
 
 void fSystem::ArmSyncTest(int checkDistance) {
@@ -1028,10 +1042,13 @@ void fSystem::StartSyncTest() {
     syncTest.bArmed = false;
     syncTest.nFramesVerified = 0;
     syncTest.nMismatches = 0;
+    syncTest.nRawMismatches = 0;
     syncTest.nLastMismatchFrame = -1;
+    syncTest.nDumpsWritten = 0;
     syncTest.lastMismatchSummary.clear();
     syncTest.lastDumpPath.clear();
     syncTest.records.clear();
+    sf4e::Game::Hash::PointerNormalizer::ResetBlockCache();
 
     GGPOSessionCallbacks cb = { 0 };
     cb.begin_game = ggpo_begin_game_callback;
@@ -1196,11 +1213,14 @@ static void WriteDesyncDump(int frame, const fSystem::SyncTest::FrameRecord& ori
 }
 
 void fSystem::SyncTestVerify(int frame, SaveState* state) {
+    bool mayDump = syncTest.bDumpOnMismatch && syncTest.nDumpsWritten < syncTest.nMaxDumps;
+
     SyncTest::FrameRecord rec;
     rec.checksum = state->checksum;
+    rec.checksumRaw = state->checksumRaw;
     rec.globalChecksum = state->globalChecksum;
     rec.keys = state->keyChecksums;
-    if (syncTest.bDumpOnMismatch) {
+    if (mayDump) {
         CaptureBlob(state, rec);
     }
 
@@ -1210,8 +1230,14 @@ void fSystem::SyncTestVerify(int frame, SaveState* state) {
         syncTest.records.emplace(frame, std::move(rec));
     }
     else {
-        // Second time: the replay pass. The two must be byte-identical.
+        // Second time: the replay pass. Compare the normalized checksums; the
+        // raw ones are tracked separately because embedded heap addresses
+        // legitimately differ between passes.
         const SyncTest::FrameRecord& original = existing->second;
+        if (original.checksumRaw != rec.checksumRaw) {
+            syncTest.nRawMismatches++;
+        }
+
         if (original.checksum == rec.checksum) {
             syncTest.nFramesVerified++;
         }
@@ -1239,10 +1265,23 @@ void fSystem::SyncTestVerify(int frame, SaveState* state) {
                 summary << ", global data differs";
             }
             syncTest.lastMismatchSummary = summary.str();
-            spdlog::error("Sync test MISMATCH: {}", syncTest.lastMismatchSummary);
 
-            if (syncTest.bDumpOnMismatch) {
+            // A broken save state mismatches on every single frame. Log the
+            // first few in full, then only occasionally.
+            if (syncTest.nMismatches <= 5 || (syncTest.nMismatches % 100) == 0) {
+                spdlog::error(
+                    "Sync test MISMATCH #{}: {}",
+                    syncTest.nMismatches,
+                    syncTest.lastMismatchSummary
+                );
+            }
+
+            if (mayDump && !rec.blob.empty() && !original.blob.empty()) {
                 WriteDesyncDump(frame, original, rec);
+                syncTest.nDumpsWritten++;
+                if (syncTest.nDumpsWritten >= syncTest.nMaxDumps) {
+                    spdlog::warn("Sync test: dump limit ({}) reached, no more will be written", syncTest.nMaxDumps);
+                }
             }
         }
         syncTest.records.erase(existing);
