@@ -185,6 +185,13 @@ namespace sf4e {
 				// comparison.
 				static bool bSkipResetAfterMemento;
 
+				// The System restores first, which includes the Scaleform action
+				// pool, and every other unit restores on top of it. If one of
+				// those later restores drives Scaleform, it perturbs the pool
+				// after it was set. Set to defer the pool's restore until every
+				// other unit has finished.
+				static bool bRestoreGfxLast;
+
 				struct StateSnapshotMeta {
 					bool sent;
 					bool confirmed;

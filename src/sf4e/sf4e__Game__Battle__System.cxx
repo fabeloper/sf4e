@@ -85,6 +85,11 @@ bool fSystem::extendedLoadRequest = false;
 bool fSystem::extendedSaveRequest = false;
 bool fSystem::idempotenceCheckRequest = false;
 bool fSystem::bSkipResetAfterMemento = false;
+bool fSystem::bRestoreGfxLast = false;
+
+// Set while a deferred Scaleform restore is outstanding. Points into the
+// memento being restored, which stays alive for the whole restore.
+static const sf4e::Platform::GFxApp::AdditionalMemento* g_pendingGfxRestore = nullptr;
 GameMementoKey::MementoID fSystem::mementoLoadRequest = { 0xffffffff, 0xffffffff };
 GameMementoKey::MementoID fSystem::mementoSaveRequest = { 0xffffffff, 0xffffffff };
 
@@ -172,10 +177,15 @@ int fSystem::RestoreFromMemento(Memento* m, GameMementoKey::MementoID* id) {
         );
     }
 
-    Platform::GFxApp::RestoreFromAdditionalMemento(
-        Dimps::Platform::GFxApp::staticMethods.GetSingleton(),
-        additional->gfxApp
-    );
+    if (bRestoreGfxLast) {
+        g_pendingGfxRestore = &additional->gfxApp;
+    }
+    else {
+        Platform::GFxApp::RestoreFromAdditionalMemento(
+            Dimps::Platform::GFxApp::staticMethods.GetSingleton(),
+            additional->gfxApp
+        );
+    }
 
     Dimps::Eva::TaskCore* updateCore = (_this->*rSystem::publicMethods.GetTaskCore)(System::TCI_UPDATE);
     Eva::TaskCore::RestoreFromAdditionalMemento(updateCore, additional->updateCore);
@@ -467,6 +477,15 @@ void fSystem::RestoreAllFromInternalMementos(rSystem* system, rKey::MementoID * 
     if (!bSkipResetAfterMemento) {
         CharaActor::staticMethods.ResetAfterMemento((charaUnit->*CharaUnit::publicMethods.GetActorByIndex)(0));
         CharaActor::staticMethods.ResetAfterMemento((charaUnit->*CharaUnit::publicMethods.GetActorByIndex)(1));
+    }
+
+    // Re-apply the Scaleform pool once nothing else can disturb it.
+    if (g_pendingGfxRestore) {
+        Platform::GFxApp::RestoreFromAdditionalMemento(
+            Dimps::Platform::GFxApp::staticMethods.GetSingleton(),
+            *g_pendingGfxRestore
+        );
+        g_pendingGfxRestore = nullptr;
     }
 
     // Intentionally omit the reset of the Network unit. All in-game inputs
@@ -1257,7 +1276,12 @@ static int CompareSaves(fSystem::SaveState* a, fSystem::SaveState* b);
 // Saves, restores, saves again and reports what changed. Nothing simulates in
 // between, so any difference is state the restore failed to reproduce.
 // Returns the number of differing keys, or -1 if the pass couldn't run.
-static int RunIdempotencePass(const char* label, bool skipResetAfterMemento) {
+static int RunIdempotencePass(
+    const char* label,
+    fSystem::SaveState* baseline,
+    bool skipResetAfterMemento,
+    bool restoreGfxLast
+) {
     int slotA = -1;
     int slotB = -1;
     for (int i = 0; i < NUM_SAVE_STATES && slotB < 0; i++) {
@@ -1281,10 +1305,19 @@ static int RunIdempotencePass(const char* label, bool skipResetAfterMemento) {
 
     spdlog::info("--- pass: {} ---", label);
 
+    // Every pass starts from the same state. Without this each pass would run
+    // against whatever the previous one left behind, and the counts would not
+    // be comparable.
+    if (baseline) {
+        fSystem::SaveState::Load(baseline);
+    }
+
     fSystem::SaveState::Save(a);
     fSystem::bSkipResetAfterMemento = skipResetAfterMemento;
+    fSystem::bRestoreGfxLast = restoreGfxLast;
     fSystem::SaveState::Load(a);
     fSystem::bSkipResetAfterMemento = false;
+    fSystem::bRestoreGfxLast = false;
     fSystem::SaveState::Save(b);
 
     int differing = CompareSaves(a, b);
@@ -1409,25 +1442,50 @@ void fSystem::RunIdempotenceCheck() {
         );
     }
 
-    // Run the same round trip twice, differing only in whether the actors'
-    // ResetAfterMemento runs. If the differences vanish without it, that call
-    // is recomputing derived state into something other than what was saved.
-    int withReset = RunIdempotencePass("normal (ResetAfterMemento called)", false);
-    int withoutReset = RunIdempotencePass("ResetAfterMemento skipped", true);
-
-    if (withReset < 0 || withoutReset < 0) {
+    // Hold a baseline so every variant below starts from identical state.
+    int baselineSlot = -1;
+    for (int i = 0; i < NUM_SAVE_STATES; i++) {
+        if (!saveStates[i].used) {
+            baselineSlot = i;
+            break;
+        }
+    }
+    if (baselineSlot < 0) {
+        spdlog::error("Idempotence check: no free save slot for the baseline");
         return;
     }
-    spdlog::info(
-        "VERDICT: {} keys differ normally, {} with ResetAfterMemento skipped",
-        withReset,
-        withoutReset
-    );
-    if (withReset > withoutReset) {
-        spdlog::info("  -> ResetAfterMemento accounts for {} of them", withReset - withoutReset);
+    SaveState* baseline = &saveStates[baselineSlot];
+    SaveState::Save(baseline);
+
+    struct Variant {
+        const char* label;
+        bool skipReset;
+        bool gfxLast;
+        int result;
+    };
+    Variant variants[] = {
+        { "normal", false, false, -1 },
+        { "ResetAfterMemento skipped", true, false, -1 },
+        { "Scaleform pool restored last", false, true, -1 },
+        { "both", true, true, -1 },
+    };
+
+    for (int i = 0; i < (int)(sizeof(variants) / sizeof(variants[0])); i++) {
+        variants[i].result = RunIdempotencePass(
+            variants[i].label,
+            baseline,
+            variants[i].skipReset,
+            variants[i].gfxLast
+        );
     }
-    else if (withoutReset >= withReset && withReset > 0) {
-        spdlog::info("  -> ResetAfterMemento is not the cause; the memento itself is incomplete");
+
+    // Leave the battle on the state we started from.
+    SaveState::Load(baseline);
+    SaveState::Free(baseline);
+
+    spdlog::info("VERDICT (keys differing out of 88, lower is better):");
+    for (int i = 0; i < (int)(sizeof(variants) / sizeof(variants[0])); i++) {
+        spdlog::info("  {:<32} {}", variants[i].label, variants[i].result);
     }
 }
 
