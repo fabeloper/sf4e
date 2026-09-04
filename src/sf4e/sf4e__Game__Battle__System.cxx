@@ -1036,11 +1036,13 @@ void fSystem::SaveState::ComputeChecksum(SaveState* s) {
     static sf4e::Game::Hash::PointerNormalizer normalizer;
     normalizer.Reset();
 
-    // Drop the block classification too. It is a cache of which 64KB blocks
-    // hold committed private memory, and the game commits more as it runs; a
-    // block judged "not heap" once and remembered would make a pointer hash
-    // raw in a later save and report a difference that isn't one.
-    sf4e::Game::Hash::PointerNormalizer::ResetBlockCache();
+    // Deliberately do NOT reset the block classification here. Refreshing it
+    // per save makes the checksum depend on live process memory rather than on
+    // the bytes being hashed: the game commits memory as it runs, so the same
+    // word can be judged a pointer in one save and a plain value in the next,
+    // and two byte-identical buffers then hash differently. That was observed:
+    // a System memento with zero differing bytes reported a changed checksum.
+    // A stale entry is harmless by comparison, since it applies to both sides.
 
     s->keyChecksums.clear();
     s->keyChecksums.reserve(s->keys.size());
@@ -1356,6 +1358,7 @@ static int CompareSaves(fSystem::SaveState* a, fSystem::SaveState* b) {
             ? a->keyChecksums.size()
             : b->keyChecksums.size();
         int differing = 0;
+        int valueWordTotal = 0;
         spdlog::error(
             "FAIL: restore is lossy. {} keys before, {} after",
             a->keyChecksums.size(),
@@ -1398,6 +1401,7 @@ static int CompareSaves(fSystem::SaveState* a, fSystem::SaveState* b) {
                 }
             }
 
+            valueWordTotal += valWords;
             spdlog::error(
                 "  {} size={} {:08x} -> {:08x}  ({} ptr, {} VALUE words differ)",
                 DescribeKey(i, a->keyChecksums[i]),
@@ -1429,8 +1433,13 @@ static int CompareSaves(fSystem::SaveState* a, fSystem::SaveState* b) {
         if (a->globalChecksum != b->globalChecksum) {
             spdlog::error("  global battle-flow data differs");
         }
-        spdlog::error("  {} of {} keys differ", differing, n);
-        differingTotal = differing;
+        spdlog::error(
+            "  {} of {} keys differ, {} value words total",
+            differing,
+            n,
+            valueWordTotal
+        );
+        differingTotal = valueWordTotal;
     }
     return differingTotal;
 }
@@ -1532,13 +1541,20 @@ void fSystem::RunIdempotenceCheck() {
     SaveState::Load(baseline);
     SaveState::Free(baseline);
 
-    spdlog::info("VERDICT (keys differing out of 88, lower is better):");
+    // Count differing value words, not differing keys. The key count depends on
+    // the checksum, which normalises pointers and so can flag a key whose bytes
+    // are identical. Byte counts are a direct measurement with nothing in the
+    // way, and they are what actually has to reach zero.
+    spdlog::info("VERDICT (differing value words, lower is better):");
     for (int i = 0; i < (int)(sizeof(variants) / sizeof(variants[0])); i++) {
         spdlog::info("  {:<38} {}", variants[i].label, variants[i].result);
     }
     spdlog::info("  {:<38} {} then {}", "convergence (1st then 2nd trip)", firstTrip, secondTrip);
     if (secondTrip == 0 && firstTrip > 0) {
         spdlog::info("  -> state converges after one restore: the restore normalises, it does not lose");
+    }
+    else if (secondTrip > 0) {
+        spdlog::info("  -> state does not converge: each restore keeps changing it");
     }
 }
 
