@@ -70,6 +70,7 @@ using fVsBattle = sf4e::GameEvents::VsBattle;
 bool fSystem::bHaltAfterNext = false;
 bool fSystem::bUpdateAllowed = true;
 int fSystem::nExtraFramesToSimulate = 0;
+int fSystem::nFramesToSkip = 0;
 int fSystem::nNextBattleStartFlowTarget = -1;
 int fSystem::nRandomizeLocalInputsEveryXFramesInGGPO = 0;
 
@@ -273,6 +274,13 @@ void fSystem::BattleUpdate() {
         return;
     }
 
+    if (ggpo && nFramesToSkip > 0) {
+        // Honour a time-sync request: hold the simulation this frame while
+        // rendering continues, so the opponent can catch up without a freeze.
+        nFramesToSkip--;
+        return;
+    }
+
     if (ggpo && *rSystem::staticVars.CurrentBattleFlow != BF__IDLE) {
         GGPOErrorCode result = GGPO_OK;
         if (localPlayerHandle != GGPO_INVALID_HANDLE) {
@@ -327,6 +335,31 @@ void fSystem::BattleUpdate() {
                         fSoundPlayerManager::SyncState();
                     }
                     CaptureSnapshot(_this);
+
+                    // Network health every ten seconds, so a tester's log says
+                    // what the connection was like without reading the screen.
+                    int frame = rSystem::GetNumFramesSimulated_FixedPoint(_this)->integral;
+                    if (frame > 0 && frame % 600 == 0) {
+                        for (int i = 0; i < MAX_SF4E_PROTOCOL_USERS; i++) {
+                            if (players[i].type != GGPO_PLAYERTYPE_REMOTE) {
+                                continue;
+                            }
+                            GGPONetworkStats stats;
+                            if (GGPO_SUCCEEDED(ggpo_get_network_stats(ggpo, players[i].handle, &stats))) {
+                                spdlog::info(
+                                    "GGPO stats @ frame {}: ping {} ms, send queue {}, recv queue {}, "
+                                    "local {} frames behind, remote {} frames behind, {} kbps",
+                                    frame,
+                                    stats.network.ping,
+                                    stats.network.send_queue_len,
+                                    stats.network.recv_queue_len,
+                                    stats.timesync.local_frames_behind,
+                                    stats.timesync.remote_frames_behind,
+                                    stats.network.kbps_sent
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -359,6 +392,7 @@ void fSystem::CloseBattle() {
         ggpo_close_session(ggpo);
         ggpo = nullptr;
     }
+    nFramesToSkip = 0;
     for (int i = 0; i < NUM_SAVE_STATES; i++) {
         if (saveStates[i].used) {
             SaveState::Free(&saveStates[i]);
@@ -576,8 +610,11 @@ void fSystem::StartGGPO(GGPOPlayer* inPlayers, int numPlayers, int port, int fra
         spdlog::error("GGPO session could not start: {}", (int)result);
         MessageBoxA(NULL, "GGPO could not start, check logs", NULL, MB_OK);
     }
-    ggpo_set_disconnect_timeout(ggpo, 1000);
-    ggpo_set_disconnect_notify_start(ggpo, 500);
+    // A 1s timeout dropped a real match on the first WiFi hiccup. Ten seconds
+    // is what rollback games actually ship with; notify at two so the UI can
+    // warn before it gives up.
+    ggpo_set_disconnect_timeout(ggpo, 10000);
+    ggpo_set_disconnect_notify_start(ggpo, 2000);
 
     int localPlayerIdx = -1;
     for (int i = 0; i < 2; i++) {
@@ -765,10 +802,15 @@ bool fSystem::ggpo_on_event_callback(GGPOEvent* info) {
         spdlog::info("GGPO: GGPO_EVENTCODE_CONNECTION_RESUMED");
         break;
     case GGPO_EVENTCODE_DISCONNECTED_FROM_PEER:
+        spdlog::error("GGPO: disconnected from peer (no packets for the timeout); leaving the match");
         *rSystem::GetReadyState(system) = rSystem::RS_ISLEAVING;
         break;
     case GGPO_EVENTCODE_TIMESYNC:
-        Sleep(1000 * info->u.timesync.frames_ahead / 60);
+        // We are ahead of the opponent. Skip that many simulation frames so
+        // they catch up, but keep rendering; the old Sleep() froze the whole
+        // game for up to 130ms and read as stutter.
+        nFramesToSkip += info->u.timesync.frames_ahead;
+        spdlog::debug("GGPO: timesync, skipping {} frames", info->u.timesync.frames_ahead);
         break;
     }
     return true;

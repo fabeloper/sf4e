@@ -52,6 +52,8 @@ namespace sf4e {
 				static bool bHaltAfterNext;
 				static bool bUpdateAllowed;
 				static int nExtraFramesToSimulate;
+				// Frames GGPO asked us to wait so the opponent catches up.
+				static int nFramesToSkip;
 				static int nNextBattleStartFlowTarget;
 				static int nRandomizeLocalInputsEveryXFramesInGGPO;
 
