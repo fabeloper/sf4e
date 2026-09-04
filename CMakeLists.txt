@@ -91,6 +91,8 @@ add_library(sf4e STATIC
     "src/sf4e/sf4e__Overlay.cxx"
     "src/sf4e/sf4e__Pad.hxx"
     "src/sf4e/sf4e__Pad.cxx"
+    "src/sf4e/sf4e__Rtti.hxx"
+    "src/sf4e/sf4e__Rtti.cxx"
     "src/sf4e/sf4e__Platform.hxx"
     "src/sf4e/sf4e__Platform.cxx"
     "src/sf4e/sf4e__UserApp.hxx"

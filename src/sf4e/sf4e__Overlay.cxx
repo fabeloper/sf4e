@@ -1056,6 +1056,15 @@ void DrawSyncTestPanel() {
 		"re-simulates every N frames, comparing a checksum of the full save state. "
 		"No opponent needed. Combine with randomized inputs to fuzz."
 	);
+	// Available during any battle, sync test or not: it saves, restores and
+	// saves again with no simulation in between, so a difference means the
+	// restore itself lost something.
+	if (Button("Run save/load idempotence check")) {
+		fSystem::idempotenceCheckRequest = true;
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("(in a battle; result goes to the log)");
+
 	if (st.bActive) {
 		Text("RUNNING  distance %d  verified %d  mismatches %d", st.nCheckDistance, st.nFramesVerified, st.nMismatches);
 		Text("Raw-byte differences (heap addresses, expected): %d", st.nRawMismatches);

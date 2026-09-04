@@ -37,6 +37,7 @@
 #include "sf4e__Game__Battle__System.hxx"
 #include "sf4e__Pad.hxx"
 #include "sf4e__Platform.hxx"
+#include "sf4e__Rtti.hxx"
 
 using Dimps::Platform::WithReleaser;
 
@@ -82,6 +83,7 @@ rKey::MementoID GGPO_MEMENTO_ID = { 1, 1 };
 
 bool fSystem::extendedLoadRequest = false;
 bool fSystem::extendedSaveRequest = false;
+bool fSystem::idempotenceCheckRequest = false;
 GameMementoKey::MementoID fSystem::mementoLoadRequest = { 0xffffffff, 0xffffffff };
 GameMementoKey::MementoID fSystem::mementoSaveRequest = { 0xffffffff, 0xffffffff };
 
@@ -392,6 +394,11 @@ void fSystem::SysMain_HandleTrainingModeFeatures() {
 
         mementoSaveRequest.lo = -1;
         mementoSaveRequest.hi = -1;
+    }
+
+    if (idempotenceCheckRequest) {
+        idempotenceCheckRequest = false;
+        RunIdempotenceCheck();
     }
 
     if (extendedLoadRequest) {
@@ -1212,6 +1219,88 @@ static void WriteDesyncDump(int frame, const fSystem::SyncTest::FrameRecord& ori
     spdlog::error("Sync test: state dump written to {}", narrow);
 }
 
+// Describes a key by the class of the object it belongs to, falling back to
+// the raw pointer when RTTI can't identify it.
+static std::string DescribeKey(size_t index, const fSystem::SaveState::KeyChecksum& kc) {
+    std::ostringstream out;
+    out << "#" << index << " ";
+    const std::string& className = sf4e::Rtti::GetClassName(kc.mementoable);
+    if (className.empty()) {
+        out << "<" << kc.mementoable << ">";
+    }
+    else {
+        out << className;
+    }
+    return out.str();
+}
+
+void fSystem::RunIdempotenceCheck() {
+    int slotA = -1;
+    int slotB = -1;
+    for (int i = 0; i < NUM_SAVE_STATES && slotB < 0; i++) {
+        if (saveStates[i].used) {
+            continue;
+        }
+        if (slotA < 0) {
+            slotA = i;
+        }
+        else {
+            slotB = i;
+        }
+    }
+    if (slotB < 0) {
+        spdlog::error("Idempotence check: need two free save slots");
+        return;
+    }
+
+    SaveState* a = &saveStates[slotA];
+    SaveState* b = &saveStates[slotB];
+
+    SaveState::Save(a);
+    SaveState::Load(a);
+    SaveState::Save(b);
+
+    spdlog::info("=== Save/load idempotence check ===");
+    if (a->checksum == b->checksum) {
+        spdlog::info(
+            "PASS: {} keys round-tripped exactly (checksum {:08x})",
+            a->keyChecksums.size(),
+            a->checksum
+        );
+    }
+    else {
+        size_t n = a->keyChecksums.size() < b->keyChecksums.size()
+            ? a->keyChecksums.size()
+            : b->keyChecksums.size();
+        int differing = 0;
+        spdlog::error(
+            "FAIL: restore is lossy. {} keys before, {} after",
+            a->keyChecksums.size(),
+            b->keyChecksums.size()
+        );
+        for (size_t i = 0; i < n; i++) {
+            if (a->keyChecksums[i].checksum == b->keyChecksums[i].checksum) {
+                continue;
+            }
+            differing++;
+            spdlog::error(
+                "  {} size={} {:08x} -> {:08x}",
+                DescribeKey(i, a->keyChecksums[i]),
+                a->keyChecksums[i].size,
+                a->keyChecksums[i].checksum,
+                b->keyChecksums[i].checksum
+            );
+        }
+        if (a->globalChecksum != b->globalChecksum) {
+            spdlog::error("  global battle-flow data differs");
+        }
+        spdlog::error("  {} of {} keys differ", differing, n);
+    }
+
+    SaveState::Free(a);
+    SaveState::Free(b);
+}
+
 void fSystem::SyncTestVerify(int frame, SaveState* state) {
     bool mayDump = syncTest.bDumpOnMismatch && syncTest.nDumpsWritten < syncTest.nMaxDumps;
 
@@ -1254,8 +1343,8 @@ void fSystem::SyncTestVerify(int frame, SaveState* state) {
             }
             for (size_t i = 0; i < n; i++) {
                 if (original.keys[i].checksum != rec.keys[i].checksum) {
-                    if (differing < 8) {
-                        summary << "key#" << i << "(obj " << original.keys[i].mementoable << ") ";
+                    if (differing < 6) {
+                        summary << DescribeKey(i, original.keys[i]) << " ";
                     }
                     differing++;
                 }

@@ -169,6 +169,14 @@ namespace sf4e {
 				static void StartSyncTest();
 				static void SyncTestVerify(int frame, SaveState* state);
 
+				// Saves the state, restores it immediately, and saves again. No
+				// simulation runs in between, so the two saves must be identical.
+				// If they aren't, the restore path is lossy, which separates a
+				// broken save/load from a simulation that reads state we never
+				// captured. Runs inside the battle update, not the render pass.
+				static bool idempotenceCheckRequest;
+				static void RunIdempotenceCheck();
+
 				struct StateSnapshotMeta {
 					bool sent;
 					bool confirmed;
