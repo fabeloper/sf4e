@@ -41,6 +41,7 @@
 #include "sf4e__Game__Battle__System.hxx"
 #include "sf4e__Game__Battle__Vfx.hxx"
 #include "sf4e__GameEvents.hxx"
+#include "sf4e__Matchmaker.hxx"
 #include "sf4e__Overlay.hxx"
 #include "sf4e__Pad.hxx"
 #include "sf4e__UserApp.hxx"
@@ -210,9 +211,75 @@ void Overlay::OnClientError(SessionClient::ErrorType errType, SessionClient* con
 enum NetworkWindowState {
 	NWS_CAPTURE = 0,
 	NWS_DECIDE = 1,
-	NWS_HOST = 2,
-	NWS_JOIN = 3,
+	NWS_HOST = 2,       // advanced: direct IP, host in-process
+	NWS_JOIN = 3,       // advanced: direct IP, join by address
+	NWS_CREATE = 4,     // lobby server: creating, waiting for a code
+	NWS_JOINCODE = 5,   // lobby server: enter a code
+	NWS_LOBBY = 6,      // lobby server: in a lobby
 };
+
+// Lobby-server flow. The server is configured once from the launcher's
+// arguments (server.txt or --server) and the player only ever sees a code.
+static sf4e::Matchmaker g_matchmaker;
+static bool g_matchmakerInitialized = false;
+static char g_playerName[32] = { 0 };
+static char g_joinCode[8] = { 0 };
+static uint8_t g_lobbyDelay = 1;
+static uint16 g_localGgpoPort = 23457;
+
+static void EnsureMatchmaker() {
+	if (g_matchmakerInitialized) {
+		return;
+	}
+	g_matchmakerInitialized = true;
+	if (g_playerName[0] == 0) {
+		DWORD len = sizeof(g_playerName);
+		if (!GetUserNameA(g_playerName, &len)) {
+			strcpy_s(g_playerName, "Player");
+		}
+	}
+	if (sf4e::args.szServer[0] != 0) {
+		g_matchmaker.Configure(sf4e::args.szServer);
+	}
+}
+
+static void ConnectToLobbyFromMatchmaker(uint8_t deviceIdx, uint8_t deviceType) {
+	std::string addr = g_matchmaker.SessionAddress();
+	std::vector<char> addrBuf(addr.begin(), addr.end());
+	addrBuf.push_back(0);
+	fUserApp::StartSession(
+		addrBuf.data(),
+		g_localGgpoPort,
+		sf4e::sidecarHash,
+		std::string(g_playerName),
+		deviceType,
+		deviceIdx,
+		g_lobbyDelay
+	);
+}
+
+static void DrawLobbyCodeBanner() {
+	Text("Lobby code");
+	ImGui::SetWindowFontScale(2.4f);
+	ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 220, 90, 255));
+	Text("%s", g_matchmaker.code.c_str());
+	ImGui::PopStyleColor();
+	ImGui::SetWindowFontScale(1.0f);
+	ImGui::SameLine();
+	if (Button("Copy")) {
+		ImGui::SetClipboardText(g_matchmaker.code.c_str());
+	}
+	ImGui::TextDisabled("Send this to your opponent. They pick Join and type it.");
+}
+
+static void DrawPlayerSettings() {
+	ImGui::InputText("Your name", g_playerName, sizeof(g_playerName));
+	int delay = g_lobbyDelay;
+	if (ImGui::SliderInt("Input delay (frames)", &delay, 0, 6)) {
+		g_lobbyDelay = (uint8_t)delay;
+	}
+	ImGui::TextDisabled("1-2 for a good connection, higher if it stutters.");
+}
 
 char* GetEditionLabel(BYTE edition) {
 	switch (edition) {
@@ -1174,11 +1241,113 @@ void DrawNetworkWindow(bool* pOpen) {
 			}
 			break;
 		case NWS_DECIDE:
-			if (Button("Host a game")) {
-				netState = NWS_HOST;
+			EnsureMatchmaker();
+			if (!g_matchmaker.IsConfigured()) {
+				ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 170, 80, 255));
+				ImGui::TextWrapped(
+					"No lobby server configured. Put the server address in server.txt next to Launcher.exe%s%s",
+					g_matchmaker.error.empty() ? "" : ": ",
+					g_matchmaker.error.c_str()
+				);
+				ImGui::PopStyleColor();
 			}
-			if (Button("Join a game")) {
-				netState = NWS_JOIN;
+			else {
+				Text("Server: %s", g_matchmaker.serverHost.c_str());
+				DrawPlayerSettings();
+				Separator();
+				ImGui::SetWindowFontScale(1.3f);
+				if (Button("Create lobby", ImVec2(200, 40))) {
+					g_matchmaker.Create(sf4e::sidecarHash, g_playerName);
+					netState = NWS_CREATE;
+				}
+				ImGui::SameLine();
+				if (Button("Join with code", ImVec2(200, 40))) {
+					g_joinCode[0] = 0;
+					netState = NWS_JOINCODE;
+				}
+				ImGui::SetWindowFontScale(1.0f);
+			}
+			Separator();
+			if (ImGui::CollapsingHeader("Advanced: direct connection (needs port forwarding)")) {
+				if (Button("Host a game")) {
+					netState = NWS_HOST;
+				}
+				if (Button("Join a game")) {
+					netState = NWS_JOIN;
+				}
+			}
+			break;
+
+		case NWS_CREATE:
+			g_matchmaker.Poll();
+			if (g_matchmaker.state == sf4e::Matchmaker::State::Waiting) {
+				Text("Creating lobby...");
+				if (Button("Cancel")) {
+					g_matchmaker.Cancel();
+					netState = NWS_DECIDE;
+				}
+			}
+			else if (g_matchmaker.state == sf4e::Matchmaker::State::Failed) {
+				ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 80, 80, 255));
+				ImGui::TextWrapped("Could not create a lobby: %s", g_matchmaker.error.c_str());
+				ImGui::PopStyleColor();
+				if (Button("Back")) {
+					netState = NWS_DECIDE;
+				}
+			}
+			else if (g_matchmaker.state == sf4e::Matchmaker::State::Done) {
+				ConnectToLobbyFromMatchmaker(deviceIdx, deviceType);
+				netState = NWS_LOBBY;
+			}
+			break;
+
+		case NWS_JOINCODE:
+			g_matchmaker.Poll();
+			if (g_matchmaker.state == sf4e::Matchmaker::State::Done) {
+				ConnectToLobbyFromMatchmaker(deviceIdx, deviceType);
+				netState = NWS_LOBBY;
+				break;
+			}
+			Text("Enter the code your opponent gave you");
+			ImGui::SetWindowFontScale(1.6f);
+			ImGui::InputText("##code", g_joinCode, sizeof(g_joinCode), ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_CharsNoBlank);
+			ImGui::SetWindowFontScale(1.0f);
+			if (g_matchmaker.state == sf4e::Matchmaker::State::Waiting) {
+				Text("Looking up lobby...");
+			}
+			else {
+				if (g_matchmaker.state == sf4e::Matchmaker::State::Failed) {
+					ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 80, 80, 255));
+					ImGui::TextWrapped("%s", g_matchmaker.error.c_str());
+					ImGui::PopStyleColor();
+				}
+				ImGui::BeginDisabled(strlen(g_joinCode) < 6);
+				if (Button("Join", ImVec2(120, 32))) {
+					g_matchmaker.Join(g_joinCode, sf4e::sidecarHash, g_playerName);
+				}
+				ImGui::EndDisabled();
+				ImGui::SameLine();
+				if (Button("Back")) {
+					g_matchmaker.Cancel();
+					netState = NWS_DECIDE;
+				}
+			}
+			break;
+
+		case NWS_LOBBY:
+			DrawLobbyCodeBanner();
+			Separator();
+			if (fUserApp::netplay) {
+				DrawNetworkLobbyPanel();
+			}
+			else {
+				Text("Connecting to the lobby...");
+			}
+			Separator();
+			if (Button("Leave lobby")) {
+				fUserApp::netplay.reset();
+				g_matchmaker.Cancel();
+				netState = NWS_DECIDE;
 			}
 			break;
 		case NWS_HOST:

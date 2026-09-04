@@ -9,6 +9,9 @@
 #include <strsafe.h>
 #include <winuser.h>
 
+#include <cstdio>
+#include <string>
+
 #include <CLI/CLI.hpp>
 #include <detours/detours.h>
 #include <spdlog/spdlog.h>
@@ -315,8 +318,10 @@ int WINAPI wWinMain(
 	};
 
 	sf4e::Args args;
+	std::string serverOption;
 	CLI::App app("A process-inspection and modification tool for the Steam release of Ultra Street Fighter 4.", "sf4e");
 	app.add_flag("--console", args.bShowConsole, "Show a console with live logging. The console may interfere with inputs to the main window.");
+	app.add_option("--server", serverOption, "Lobby server, as host or host:port. Overrides server.txt next to the launcher.");
 	int argc;
 	LPWSTR* argv = CommandLineToArgvW(
 		// Intentionally do _not_ use lpCmdLine here. Windows removes
@@ -346,6 +351,44 @@ int WINAPI wWinMain(
 	if (!UpdatePath(szLauncherDirW, szErrorStringW, 4096)) {
 		return 1;
 	}
+
+	// Lobby server: the --server option wins, otherwise the first line of
+	// server.txt next to the launcher. A player edits a text file rather
+	// than a command line.
+	if (serverOption.empty()) {
+		char szServerTxt[1024] = { 0 };
+		PathCombineA(szServerTxt, szLauncherDirA, "server.txt");
+		FILE* f = nullptr;
+		if (fopen_s(&f, szServerTxt, "r") == 0 && f != nullptr) {
+			char line[128] = { 0 };
+			// First line that isn't blank or a comment.
+			while (fgets(line, sizeof(line), f)) {
+				const char* p = line;
+				while (*p == ' ' || *p == '\t' || (unsigned char)*p == 0xEF || (unsigned char)*p == 0xBB || (unsigned char)*p == 0xBF) {
+					p++;
+				}
+				if (*p == '#' || *p == '\r' || *p == '\n' || *p == 0) {
+					continue;
+				}
+				serverOption = p;
+				break;
+			}
+			fclose(f);
+		}
+	}
+	// Trim whitespace and a UTF-8 BOM that Notepad likes to add.
+	while (!serverOption.empty() && (unsigned char)serverOption.back() <= ' ') {
+		serverOption.pop_back();
+	}
+	size_t start = 0;
+	if (serverOption.size() >= 3 && (unsigned char)serverOption[0] == 0xEF && (unsigned char)serverOption[1] == 0xBB && (unsigned char)serverOption[2] == 0xBF) {
+		start = 3;
+	}
+	while (start < serverOption.size() && (unsigned char)serverOption[start] <= ' ') {
+		start++;
+	}
+	serverOption = serverOption.substr(start);
+	strncpy_s(args.szServer, sizeof(args.szServer), serverOption.c_str(), _TRUNCATE);
 
 	if (!FindSF4(szGameDirectory, 1024, szExePath, 1024)) {
 		MessageBoxW(NULL, L"Cannot find Street Fighter 4: check logs for debugging", NULL, MB_OK);

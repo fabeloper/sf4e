@@ -87,6 +87,8 @@ add_library(sf4e STATIC
     "src/sf4e/sf4e__Game__Battle__Vfx.cxx"
     "src/sf4e/sf4e__GameEvents.hxx"
     "src/sf4e/sf4e__GameEvents.cxx"
+    "src/sf4e/sf4e__Matchmaker.hxx"
+    "src/sf4e/sf4e__Matchmaker.cxx"
     "src/sf4e/sf4e__Overlay.hxx"
     "src/sf4e/sf4e__Overlay.cxx"
     "src/sf4e/sf4e__Pad.hxx"
@@ -121,6 +123,9 @@ target_link_libraries(
 add_executable(SessionInteractiveTest "src/session/interactive_test.cxx")
 target_link_libraries(SessionInteractiveTest PRIVATE nlohmann_json::nlohmann_json imgui::imgui spdlog::spdlog Dimps sf4e Session "d3d9")
 # target_link_options(SessionInteractiveTest PRIVATE "/entry:wWinMainCRTStartup")
+
+add_executable(LobbyServer src/server/lobby_server.cxx)
+target_link_libraries(LobbyServer PRIVATE Session spdlog::spdlog nlohmann_json::nlohmann_json GameNetworkingSockets::shared "ws2_32")
 
 add_executable(Launcher WIN32 src/launcher/launcher.cxx)
 target_include_directories(Launcher PRIVATE ${VALVEFILEVDF_INCLUDE_DIRS})
@@ -160,6 +165,7 @@ install(
   FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/INSTALL.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+    "${CMAKE_CURRENT_SOURCE_DIR}/server.txt"
   DESTINATION "."
 )
 

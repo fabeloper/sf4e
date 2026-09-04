@@ -29,6 +29,7 @@ using sf4e::SessionServer;
 
 const int sf4e::SESSION_SERVER_MAX_MESSAGES_PER_POLL = 200;
 SessionServer* SessionServer::s_pCallbackInstance;
+std::map<HSteamListenSocket, SessionServer*> SessionServer::s_byListenSocket;
 
 SessionServer::SessionServer(std::string identity, std::string sidecarHash, bool editionSelect, int roundCount, FixedPoint roundTime) :
 	_identity(identity),
@@ -36,7 +37,8 @@ SessionServer::SessionServer(std::string identity, std::string sidecarHash, bool
 	_interface(SteamNetworkingSockets()),
 	_dataDirty(false),
 	_lobbyData(SessionProtocol::LobbyData::NULL_LOBBY),
-	_listenSock(k_HSteamListenSocket_Invalid)
+	_listenSock(k_HSteamListenSocket_Invalid),
+	_relayPort(0)
 {
 	_lobbyData.id = { _identity, "1" };
 	_lobbyData.editionSelect = editionSelect;
@@ -91,8 +93,23 @@ int SessionServer::Listen(uint16 nPort) {
 		spdlog::error("Failed to listen on port {}", nPort);
 		return -1;
 	}
+	s_byListenSocket[_listenSock] = this;
 	spdlog::info("Server listening on port {}", nPort);
 	return 0;
+}
+
+void SessionServer::SetRelayPort(uint16_t port) {
+	_relayPort = port;
+}
+
+void SessionServer::SetSidecarHash(const std::string& hash) {
+	_sidecarHash = hash;
+}
+
+void SessionServer::ResetLobby() {
+	_matchData.Clear();
+	ResetBattleSync();
+	_dataDirty = true;
 }
 
 int SessionServer::Step()
@@ -415,6 +432,7 @@ int SessionServer::Close()
 	_interface->DestroyPollGroup(_pollGroup);
 	_pollGroup = k_HSteamNetPollGroup_Invalid;
 	if (_listenSock != k_HSteamListenSocket_Invalid) {
+		s_byListenSocket.erase(_listenSock);
 		_interface->CloseListenSocket(_listenSock);
 		_listenSock = k_HSteamListenSocket_Invalid;
 	}
@@ -507,7 +525,14 @@ void SessionServer::OnSteamNetConnectionStatusChanged(SteamNetConnectionStatusCh
 
 void SessionServer::SteamNetConnectionStatusChangedCallback(SteamNetConnectionStatusChangedCallback_t* pInfo)
 {
-	s_pCallbackInstance->OnSteamNetConnectionStatusChanged(pInfo);
+	auto found = s_byListenSocket.find(pInfo->m_info.m_hListenSocket);
+	if (found != s_byListenSocket.end()) {
+		found->second->OnSteamNetConnectionStatusChanged(pInfo);
+		return;
+	}
+	if (s_pCallbackInstance) {
+		s_pCallbackInstance->OnSteamNetConnectionStatusChanged(pInfo);
+	}
 }
 
 SessionProtocol::JoinResult SessionServer::RegisterToWait(
@@ -518,7 +543,7 @@ SessionProtocol::JoinResult SessionServer::RegisterToWait(
 	const SteamNetworkingIPAddr& peerAddr,
 	SessionProtocol::ConnectionID& cid
 ) {
-	if (sidecarHash != _sidecarHash) {
+	if (!_sidecarHash.empty() && sidecarHash != _sidecarHash) {
 		return SessionProtocol::JR_HASH_INVALID;
 	}
 
@@ -532,14 +557,22 @@ SessionProtocol::JoinResult SessionServer::RegisterToWait(
 		}
 	}
 
+	// An empty address means "the same host as this session server"; the
+	// clients substitute the address they connected to. With a relay that is
+	// exactly right: everyone reaches everyone else at the relay's port.
 	char peerAddrStr[SteamNetworkingIPAddr::k_cchMaxString];
-	if (peerAddr.IsLocalHost()) {
+	uint16_t reportedPort = port;
+	if (_relayPort != 0) {
+		peerAddrStr[0] = 0;
+		reportedPort = _relayPort;
+	}
+	else if (peerAddr.IsLocalHost()) {
 		peerAddrStr[0] = 0;
 	}
 	else {
 		peerAddr.ToString(peerAddrStr, SteamNetworkingIPAddr::k_cchMaxString, false);
 	}
-	SessionMember newMember{ {cid, name, peerAddrStr, port}, conn };
+	SessionMember newMember{ {cid, name, peerAddrStr, reportedPort}, conn };
 	clients.push_back(std::move(newMember));
 	return SessionProtocol::JOIN_OK;
 }

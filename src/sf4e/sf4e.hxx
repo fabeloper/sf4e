@@ -9,6 +9,9 @@
 namespace sf4e {
 	typedef struct Args {
 		bool bShowConsole = false;
+		// Lobby server as "host" or "host:port". Copied by value into the
+		// game process with the rest of the payload, hence a fixed buffer.
+		char szServer[96] = { 0 };
 	} Args;
 
 	typedef struct Payload {
