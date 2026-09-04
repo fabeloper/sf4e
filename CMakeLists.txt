@@ -1,4 +1,4 @@
-cmake_minimum_required (VERSION 3.20)
+cmake_minimum_required (VERSION 3.21)
 
 project (
     sf4e
@@ -135,6 +135,32 @@ target_compile_definitions(Launcher PRIVATE -D_UNICODE -DUNICODE)
 install(
   TARGETS Launcher Sidecar
   RUNTIME DESTINATION "."
+  LIBRARY DESTINATION "."
+)
+
+# Ship the dependency DLLs alongside the launcher. Without these the package
+# only runs on a machine that already has them, which is to say on a developer's
+# machine, and the whole point of a release is that a player can unzip it.
+#
+# Sweep the build directory rather than using TARGET_RUNTIME_DLLS: that only
+# reports DLLs belonging to linked imported targets, so it silently omitted
+# OpenSSL, which GameNetworkingSockets loads underneath. vcpkg has already
+# deployed the full transitive set next to the binaries, so copy that.
+install(
+  DIRECTORY "${CMAKE_BINARY_DIR}/"
+  DESTINATION "."
+  FILES_MATCHING
+    PATTERN "*.dll"
+    PATTERN "CMakeFiles" EXCLUDE
+    PATTERN "vcpkg_installed" EXCLUDE
+    PATTERN "_CPack_Packages" EXCLUDE
+)
+
+install(
+  FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/INSTALL.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+  DESTINATION "."
 )
 
 set(CPACK_PACKAGE_NAME "${PROJECT_NAME}")
@@ -142,3 +168,8 @@ set(CPACK_PACKAGE_VENDOR "The ${PROJECT_NAME} Dev Team")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
 set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_NAME} ${PROJECT_DESCRIPTION}")
+set(CPACK_GENERATOR "ZIP")
+set(CPACK_PACKAGE_FILE_NAME "${PROJECT_NAME}-${PROJECT_VERSION}-win32")
+# One folder in the zip, so extracting never scatters loose files.
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+include(CPack)
