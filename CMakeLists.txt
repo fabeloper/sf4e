@@ -161,6 +161,7 @@ install(
     PATTERN "CMakeFiles" EXCLUDE
     PATTERN "vcpkg_installed" EXCLUDE
     PATTERN "_CPack_Packages" EXCLUDE
+    PATTERN "sf4e-server" EXCLUDE
 )
 
 install(
