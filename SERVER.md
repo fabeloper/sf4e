@@ -44,6 +44,37 @@ itself:
 Zip the folder and send it. Players extract, double-click `Launcher.exe`, and
 see *Create lobby* and *Join with code*.
 
+## Running it at home
+
+A spare Windows PC or laptop on your home network works just as well as a
+VPS, with one difference: your router has to send the server's ports to it.
+
+1. Plug the laptop into mains power and, ideally, into the router with a
+   cable. Sign in to Windows.
+2. Copy the `sf4e-server` folder onto it, anywhere, and run
+   `setup-laptop.cmd` in it. It asks for administrator rights, then opens
+   the firewall, stops the machine sleeping, registers the server to start
+   at every sign-in, and starts it. It prints the machine's IP address at
+   the end; note it.
+3. Give the laptop a fixed address so the router can't move it: in your
+   router's app or web page, find *Address Reservation* (or *DHCP
+   reservation*) and reserve the address it printed.
+4. Send the ports to it. Either run `upnp-map.cmd` on the laptop, which asks
+   the router to do it automatically, or forward **UDP 23400-23420** and
+   **UDP 24001-24020** to the laptop's address by hand in the router. If you
+   have two routers in a row (a provider box and your own), the provider's
+   box must forward the ports, or DMZ, to your router, and your router to
+   the laptop.
+5. Check it from another machine: `test-server.cmd LAPTOP-IP`, then
+   `test-server.cmd YOUR-PUBLIC-IP`. Both should print `"ok":true`.
+6. For a server that survives reboots with nobody around, turn on automatic
+   sign-in: `Win+R`, `netplwiz`, untick "Users must enter a user name and
+   password".
+
+Players keep using your public IP in `server.txt`. It changes when your
+provider decides; a free dynamic-DNS name, set up in the router, gives them
+an address that never changes.
+
 ## Capacity and limits
 
 * 20 lobbies at once. Change `NUM_LOBBIES` in `src/server/lobby_server.cxx` to
