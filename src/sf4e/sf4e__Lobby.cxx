@@ -125,12 +125,44 @@ namespace {
 
 	bool KeyDown(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
+	// XInput and GetAsyncKeyState report the devices regardless of which
+	// window is active, so without this a message typed into Discord with the
+	// game behind it walks the lobby. Only the game's own window counts.
+	bool GameHasFocus() {
+		HWND fg = GetForegroundWindow();
+		if (!fg) return false;
+		DWORD pid = 0;
+		GetWindowThreadProcessId(fg, &pid);
+		return pid == GetCurrentProcessId();
+	}
+	bool g_hadFocus = false;
+
 	// Edge-triggered buttons; directions repeat while held.
 	Input ReadInput() {
 		Input in;
 		XINPUT_STATE xs;
 		WORD pad = 0;
 		SHORT lx = 0, ly = 0;
+
+		bool focus = GameHasFocus();
+		if (!focus) {
+			g_hadFocus = false;
+			g_heldDir = -1;
+			return in;
+		}
+		if (!g_hadFocus) {
+			// Focus just came back: take the current state as the baseline so
+			// whatever is held right now doesn't register as a fresh press.
+			g_hadFocus = true;
+			for (DWORD i = 0; i < 4; i++) {
+				if (XInputGetState(i, &xs) == ERROR_SUCCESS) pad |= xs.Gamepad.wButtons;
+			}
+			g_prevPad = pad;
+			for (int k = 8; k < 256; k++) g_prevKeys[k] = KeyDown(k);
+			g_heldDir = -1;
+			return in;
+		}
+		pad = 0;
 		for (DWORD i = 0; i < 4; i++) {
 			if (XInputGetState(i, &xs) == ERROR_SUCCESS) {
 				pad |= xs.Gamepad.wButtons;
@@ -199,6 +231,7 @@ namespace {
 	}
 
 	void ReadTypedCode() {
+		if (!GameHasFocus() || !g_hadFocus) return;
 		if (KeyDown(VK_CONTROL)) return;  // Ctrl+V is a paste, not a letter
 		for (int i = 0; i < CODE_CHAR_COUNT; i++) {
 			char c = CODE_CHARS[i];
