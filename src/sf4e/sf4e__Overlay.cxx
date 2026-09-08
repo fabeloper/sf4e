@@ -41,6 +41,7 @@
 #include "sf4e__Game__Battle__System.hxx"
 #include "sf4e__Game__Battle__Vfx.hxx"
 #include "sf4e__GameEvents.hxx"
+#include "sf4e__Lobby.hxx"
 #include "sf4e__Matchmaker.hxx"
 #include "sf4e__Overlay.hxx"
 #include "sf4e__Pad.hxx"
@@ -146,7 +147,7 @@ static bool show_hud_window = false;
 static bool show_log_window = false;
 static bool show_main_menu_window = false;
 static bool show_memento_window = false;
-static bool show_network_window = true;
+static bool show_network_window = false;
 static bool show_pad_window = false;
 static bool show_sound_window = false;
 static bool show_system_window = false;
@@ -2244,7 +2245,7 @@ void DrawTaskWindow(bool* pOpen) {
 
 int OnMainMenuModeSelected(int mode) {
 	if (mode == rMainMenu::MainMenuItemID::MMI_NETWORK) {
-		show_network_window = true;
+		sf4e::Lobby::Open();
 		return 1;
 	}
 
@@ -2254,6 +2255,7 @@ int OnMainMenuModeSelected(int mode) {
 void Overlay::InitializeOverlay(HWND hWnd, IDirect3DDevice9* lpDevice) {
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
+	sf4e::Lobby::LoadFonts(ImGui::GetIO());
 	ImGui::StyleColorsDark();
 	ImGuiStyle& style = ImGui::GetStyle();
 	style.Alpha = DEFAULT_ALPHA;
@@ -2269,6 +2271,7 @@ void Overlay::DrawOverlay() {
 	NewFrame();
 
 	DrawHashOverlay();
+	sf4e::Lobby::Draw();
 	if (ImGui::IsMousePosValid() && ImGui::GetIO().MousePos.y < 200) {
 		if (BeginMainMenuBar()) {
 			if (BeginMenu("Eva")) {

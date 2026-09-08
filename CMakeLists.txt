@@ -89,6 +89,8 @@ add_library(sf4e STATIC
     "src/sf4e/sf4e__Game__Battle__Vfx.cxx"
     "src/sf4e/sf4e__GameEvents.hxx"
     "src/sf4e/sf4e__GameEvents.cxx"
+    "src/sf4e/sf4e__Lobby.hxx"
+    "src/sf4e/sf4e__Lobby.cxx"
     "src/sf4e/sf4e__Matchmaker.hxx"
     "src/sf4e/sf4e__Matchmaker.cxx"
     "src/sf4e/sf4e__Overlay.hxx"
