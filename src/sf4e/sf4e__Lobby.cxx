@@ -625,10 +625,13 @@ namespace {
 		float ox = 60;
 		for (int i = 0; i < nOpts; i++) {
 			bool cursor = g_lobbyRow == 1 && i == g_optionCursor;
-			ImVec2 sz = TextSize(g_fontBody, 22, opts[i]);
+			// The focused option wears chevrons so it reads as "press to change".
+			char shown[64];
+			snprintf(shown, sizeof(shown), cursor ? "<  %s  >" : "%s", opts[i]);
+			ImVec2 sz = TextSize(g_fontBody, 22, shown);
 			ImVec2 a(ox, oy), b(ox + sz.x + 36, oy + 40);
 			if (cursor) Slant(dl, a, b, RED, 8); else dl->AddRect(a, b, CARD_EDGE, 0, 0, 1);
-			dl->AddText(g_fontBody, 22, ImVec2(a.x + 18, a.y + 8), cursor ? PAPER : PAPER_DIM, opts[i]);
+			dl->AddText(g_fontBody, 22, ImVec2(a.x + 18, a.y + 8), cursor ? PAPER : PAPER_DIM, shown);
 			ox = b.x + 14;
 		}
 
@@ -645,7 +648,10 @@ namespace {
 			dl->AddText(g_fontHead, 30, ImVec2(a.x + 30, a.y + 8), cursor ? INK : PAPER_DIM, acts[i]);
 			ax = b.x + 20;
 		}
-		DrawHint(dl, ds, connected ? "Move: choose     A: select     Left/Right on options: change     Start: READY     B: leave" : "Connecting to the lobby...");
+		const char* hint = g_lobbyRow == 1
+			? "Left/Right: next option     A / RB: change     LB: change back     Start: READY     B: leave"
+			: "Move: choose     A: select     Start: READY     B: leave";
+		DrawHint(dl, ds, connected ? hint : "Connecting to the lobby...");
 
 		// Input.
 		if (g_sentReady) {
@@ -662,8 +668,10 @@ namespace {
 		else if (g_lobbyRow == 1) {
 			if (in.up) g_lobbyRow = 0;
 			if (in.down) g_lobbyRow = 2;
-			if (in.confirm) g_optionCursor = (g_optionCursor + 1) % nOpts;
-			int d = in.right ? 1 : in.left ? -1 : 0;
+			// Left/right walk along the row; A and the bumpers change the value.
+			if (in.left) g_optionCursor = (g_optionCursor + nOpts - 1) % nOpts;
+			if (in.right) g_optionCursor = (g_optionCursor + 1) % nOpts;
+			int d = in.confirm ? 1 : 0;
 			if (in.rb) d = 1; if (in.lb) d = -1;
 			if (d != 0) {
 				switch (g_optionCursor) {
@@ -674,8 +682,6 @@ namespace {
 				case 4: if (side == 0) g_stage = (g_stage + 30 + d) % 30; break;
 				}
 			}
-			// Tab between options with Y too.
-			if (in.alt) g_optionCursor = (g_optionCursor + 1) % nOpts;
 		}
 		else {
 			if (in.up) g_lobbyRow = 1;
@@ -728,10 +734,28 @@ void sf4e::Lobby::Open() {
 	spdlog::info("Lobby: opened");
 }
 
+// After closing, keep the game's pad muted until every button is released.
+// Otherwise the press that closed the lobby is still held when the game gets
+// the pad back, its menu treats it as a fresh press on the still-highlighted
+// "Multiplayer Battle", and the lobby reopens before the player sees it go.
+static bool g_releaseLatch = false;
+
+static bool AnyButtonHeld() {
+	XINPUT_STATE xs;
+	for (DWORD i = 0; i < 4; i++) {
+		if (XInputGetState(i, &xs) == ERROR_SUCCESS && xs.Gamepad.wButtons != 0) return true;
+	}
+	const int keys[] = { VK_RETURN, VK_SPACE, VK_ESCAPE, VK_BACK, VK_F1, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT };
+	for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+		if (GetAsyncKeyState(keys[i]) & 0x8000) return true;
+	}
+	return false;
+}
+
 void sf4e::Lobby::Close() {
 	if (!g_open) return;
 	g_open = false;
-	SetSuppress(false);
+	g_releaseLatch = true;
 	spdlog::info("Lobby: closed");
 }
 
@@ -755,7 +779,14 @@ void sf4e::Lobby::OnMatchResult(int winnerSide, int charaP1, int charaP2) {
 }
 
 void sf4e::Lobby::Draw() {
-	if (!g_open) return;
+	if (!g_open) {
+		if (g_releaseLatch) {
+			if (AnyButtonHeld()) return;
+			g_releaseLatch = false;
+			SetSuppress(false);
+		}
+		return;
+	}
 
 	// Hide during a match, and come back for the rematch.
 	bool menu = OnMainMenu();
