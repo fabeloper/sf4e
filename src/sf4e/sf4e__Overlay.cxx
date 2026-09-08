@@ -2252,7 +2252,20 @@ int OnMainMenuModeSelected(int mode) {
 	return 0;
 }
 
+// The overlay only exists between a successful InitializeOverlay and the next
+// FreeOverlay. Device resets (alt-tab out of fullscreen, a resolution change)
+// tear it down and must not bring it back until the game has a device again:
+// initializing against a null device crashed inside ImGui_ImplDX9_Init.
+static bool g_overlayReady = false;
+
 void Overlay::InitializeOverlay(HWND hWnd, IDirect3DDevice9* lpDevice) {
+	if (g_overlayReady) {
+		return;
+	}
+	if (lpDevice == nullptr || hWnd == NULL) {
+		spdlog::warn("Overlay: no D3D device yet, deferring overlay initialization");
+		return;
+	}
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
 	sf4e::Lobby::LoadFonts(ImGui::GetIO());
@@ -2263,9 +2276,21 @@ void Overlay::InitializeOverlay(HWND hWnd, IDirect3DDevice9* lpDevice) {
 	ImGui_ImplWin32_Init(hWnd);
 	ImGui_ImplDX9_Init(lpDevice);
 	fMainMenu::OnModeSelectedOverride = OnMainMenuModeSelected;
+	g_overlayReady = true;
 }
 
 void Overlay::DrawOverlay() {
+	if (!g_overlayReady) {
+		// A reset tore the overlay down; bring it back once a device exists.
+		Dimps::Platform::D3D* d3d = Dimps::Platform::D3D::staticMethods.GetSingleton();
+		Dimps::Platform::Main* main = Dimps::Platform::Main::staticMethods.GetSingleton();
+		if (d3d && main && d3d->lpD3DDevice) {
+			InitializeOverlay((*Dimps::Platform::Main::GetWindowData(main))->hWnd, d3d->lpD3DDevice);
+		}
+		if (!g_overlayReady) {
+			return;
+		}
+	}
 	ImGui_ImplDX9_NewFrame();
 	ImGui_ImplWin32_NewFrame();
 	NewFrame();
@@ -2469,11 +2494,18 @@ void Overlay::DrawOverlay() {
 }
 
 void Overlay::FreeOverlay() {
+	if (!g_overlayReady) {
+		return;
+	}
+	g_overlayReady = false;
 	ImGui_ImplDX9_Shutdown();
 	ImGui_ImplWin32_Shutdown();
 	ImGui::DestroyContext();
 }
 
 LRESULT WINAPI Overlay::OverlayWindowFunc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+	if (!g_overlayReady) {
+		return 0;
+	}
 	return ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
 }

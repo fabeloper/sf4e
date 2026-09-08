@@ -72,10 +72,19 @@ void fD3D::Destroy() {
 DWORD fD3D::Reset() {
     Overlay::FreeOverlay();
     DWORD out = (this->*rD3D::privateMethods.Reset)();
-    Overlay::InitializeOverlay(
-        (*rMain::GetWindowData(rMain::staticMethods.GetSingleton()))->hWnd,
-        Dimps::Platform::D3D::staticMethods.GetSingleton()->lpD3DDevice
-    );
+    // Only rebuild the overlay if the reset actually produced a device. A
+    // lost device (alt-tab out of fullscreen) can make this fail, and the
+    // game retries later; DrawOverlay initializes lazily once one exists.
+    IDirect3DDevice9* device = Dimps::Platform::D3D::staticMethods.GetSingleton()->lpD3DDevice;
+    if (out == 0 && device != nullptr) {
+        Overlay::InitializeOverlay(
+            (*rMain::GetWindowData(rMain::staticMethods.GetSingleton()))->hWnd,
+            device
+        );
+    }
+    else {
+        spdlog::warn("D3D reset returned {} with device {}; overlay will re-initialize when a device is back", out, (void*)device);
+    }
     return out;
 }
 
