@@ -19,6 +19,7 @@
 
 #include "../sf4e/sf4e.hxx"
 #include "../sidecar/sidecar.hxx"
+#include "baked_server.h"
 
 LPCWCH szGameFilename = L"SSFIV.exe";
 LPCWCH szLibrarySuffix = L"steamapps\\common\\Super Street Fighter IV - Arcade Edition";
@@ -388,6 +389,13 @@ int WINAPI wWinMain(
 		start++;
 	}
 	serverOption = serverOption.substr(start);
+
+	// Nothing supplied: use the address baked in at build time, if any.
+	if (serverOption.empty() && SF4E_BAKED_SERVER_LEN > 0) {
+		for (unsigned int i = 0; i < SF4E_BAKED_SERVER_LEN; i++) {
+			serverOption.push_back((char)(SF4E_BAKED_SERVER_BYTES[i] ^ (unsigned char)((90 + i) % 256)));
+		}
+	}
 	strncpy_s(args.szServer, sizeof(args.szServer), serverOption.c_str(), _TRUNCATE);
 
 	if (!FindSF4(szGameDirectory, 1024, szExePath, 1024)) {

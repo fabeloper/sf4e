@@ -117,6 +117,16 @@ void Matchmaker::Join(const std::string& lobbyCode, const std::string& sidecarHa
 	Send(req.dump());
 }
 
+void Matchmaker::Ping() {
+	if (!_configured) {
+		state = State::Failed;
+		error = "no server configured";
+		return;
+	}
+	json req = { {"op", "ping"} };
+	Send(req.dump());
+}
+
 void Matchmaker::Cancel() {
 	state = State::Idle;
 	_pending.clear();
@@ -131,7 +141,7 @@ void Matchmaker::Poll() {
 	if (_sentAt == 0 || now - _sentAt > RETRY_MS) {
 		if (_attempts >= MAX_ATTEMPTS) {
 			state = State::Failed;
-			error = "no answer from " + serverHost + " (is the lobby server running?)";
+			error = "no answer from the lobby server (is it running?)";
 			return;
 		}
 		sendto(_sock, _pending.c_str(), (int)_pending.size(), 0, (sockaddr*)&_server, sizeof(_server));
@@ -153,8 +163,12 @@ void Matchmaker::Poll() {
 		if (reply.value("ok", false)) {
 			code = reply.value("code", "");
 			sessionPort = (uint16_t)reply.value("session_port", 0);
+			lobbiesInUse = reply.value("lobbies", lobbiesInUse);
+			capacity = reply.value("capacity", capacity);
 			state = State::Done;
-			spdlog::info("Matchmaker: lobby {} on session port {}", code, sessionPort);
+			if (!code.empty()) {
+				spdlog::info("Matchmaker: lobby {} on session port {}", code, sessionPort);
+			}
 		}
 		else {
 			std::string reason = reply.value("error", "unknown");

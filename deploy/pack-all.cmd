@@ -1,7 +1,9 @@
 @echo off
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars32.bat" >nul
 cd /d C:\Users\FABIPC\Documents\SF4Rollback\sf4e
-cmake --preset default
+set BAKED=
+if exist "%~dp0server.private" ( for /f "usebackq delims=" %%L in ("%~dp0server.private") do ( if not defined BAKED set BAKED=%%L ) )
+cmake --preset default -DSF4E_BAKED_SERVER=%BAKED%
 if errorlevel 1 ( echo CONFIGURE_FAILED & exit /b 1 )
 cmake --build msvc-build\default
 if errorlevel 1 ( echo BUILD_FAILED & exit /b 1 )

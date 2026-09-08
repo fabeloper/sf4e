@@ -2,7 +2,7 @@ cmake_minimum_required (VERSION 3.21)
 
 project (
     sf4e
-    VERSION 0.0.1
+    VERSION 0.1.0
     DESCRIPTION "A process-inspection and modification tool for the Steam release of Ultra Street Fighter 4."
     HOMEPAGE_URL "https://gitlab.com/adanducci/sf4e"
 )
@@ -131,8 +131,16 @@ target_link_libraries(SessionInteractiveTest PRIVATE nlohmann_json::nlohmann_jso
 add_executable(LobbyServer src/server/lobby_server.cxx)
 target_link_libraries(LobbyServer PRIVATE Session spdlog::spdlog nlohmann_json::nlohmann_json GameNetworkingSockets::shared "ws2_32")
 
-add_executable(Launcher WIN32 src/launcher/launcher.cxx)
-target_include_directories(Launcher PRIVATE ${VALVEFILEVDF_INCLUDE_DIRS})
+# The lobby server address baked into the launcher. Kept out of the tree:
+# deploy/pack-all.cmd reads deploy/server.private (gitignored) and passes it
+# here. Empty means no default; server.txt or --server then has to supply it.
+set(SF4E_BAKED_SERVER "" CACHE STRING "Lobby server (host[:port]) baked into the launcher")
+set(SF4E_BAKED_OUT "${CMAKE_BINARY_DIR}/generated/baked_server.h")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/bake-server.cmake")
+
+add_executable(Launcher WIN32 src/launcher/launcher.cxx src/launcher/app.rc)
+set_target_properties(Launcher PROPERTIES OUTPUT_NAME "SF4Enhanced")
+target_include_directories(Launcher PRIVATE ${VALVEFILEVDF_INCLUDE_DIRS} "${CMAKE_BINARY_DIR}/generated")
 target_link_libraries(Launcher PRIVATE ${LIB_DETOURS} CLI11::CLI11 spdlog::spdlog "shlwapi" "pathcch")
 
 add_library(Sidecar SHARED src/sidecar/sidecar.cxx)
@@ -170,7 +178,6 @@ install(
   FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/INSTALL.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
-    "${CMAKE_CURRENT_SOURCE_DIR}/server.txt"
   DESTINATION "."
 )
 

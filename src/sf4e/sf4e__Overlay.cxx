@@ -1253,7 +1253,7 @@ void DrawNetworkWindow(bool* pOpen) {
 				ImGui::PopStyleColor();
 			}
 			else {
-				Text("Server: %s", g_matchmaker.serverHost.c_str());
+				Text("Server: configured");
 				DrawPlayerSettings();
 				Separator();
 				ImGui::SetWindowFontScale(1.3f);

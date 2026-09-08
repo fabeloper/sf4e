@@ -371,9 +371,32 @@ namespace {
 		}
 	}
 
+	// Server reachability shown on the home screen. The address itself is
+	// never displayed anywhere; players only ever see whether it answers.
+	int g_serverStatus = -1;        // -1 checking, 0 unreachable, 1 online
+	bool g_pingInFlight = false;
+
 	void DrawHome(ImDrawList* dl, ImVec2 ds, const Input& in) {
 		EnsureMatchmaker();
-		DrawHeader(dl, ds, "ONLINE VERSUS", g_mm.IsConfigured() ? ("server  " + g_mm.serverHost).c_str() : "no server configured (server.txt)");
+		if (g_serverStatus < 0 && !g_pingInFlight && g_mm.IsConfigured()) {
+			g_mm.Ping();
+			g_pingInFlight = true;
+		}
+		if (g_pingInFlight) {
+			g_mm.Poll();
+			if (g_mm.state == sf4e::Matchmaker::State::Done) { g_serverStatus = 1; g_pingInFlight = false; g_mm.Cancel(); }
+			else if (g_mm.state == sf4e::Matchmaker::State::Failed) { g_serverStatus = 0; g_pingInFlight = false; g_mm.Cancel(); }
+		}
+		const char* sub = !g_mm.IsConfigured() ? "no server configured" :
+			g_serverStatus == 1 ? "SERVER ONLINE" : g_serverStatus == 0 ? "SERVER UNREACHABLE" : "checking the server...";
+		DrawHeader(dl, ds, "ONLINE VERSUS", nullptr);
+		ImU32 subCol = g_serverStatus == 1 ? GREEN : g_serverStatus == 0 ? RED : PAPER_DIM;
+		dl->AddText(g_fontBody, 26, ImVec2(64, 132), subCol, sub);
+		if (g_serverStatus == 1 && g_mm.capacity > 0) {
+			char cap[48];
+			snprintf(cap, sizeof(cap), "   %d of %d lobbies in use", g_mm.lobbiesInUse, g_mm.capacity);
+			dl->AddText(g_fontSmall, 20, ImVec2(64 + TextSize(g_fontBody, 26, sub).x, 136), PAPER_DIM, cap);
+		}
 
 		char delayLabel[32];
 		snprintf(delayLabel, sizeof(delayLabel), "INPUT DELAY   <  %d  >", g_delay);
@@ -398,7 +421,7 @@ namespace {
 		if (in.confirm) {
 			switch (g_homeCursor) {
 			case 0:
-				if (!g_mm.IsConfigured()) { Flash("No lobby server: put its address in server.txt"); break; }
+				if (!g_mm.IsConfigured()) { Flash("No lobby server configured"); break; }
 				g_isCreator = true;
 				g_mm.Create(sf4e::sidecarHash, g_name);
 				g_screen = SC_CONNECTING;
@@ -695,6 +718,8 @@ void sf4e::Lobby::Open() {
 	g_open = true;
 	g_hiddenForBattle = false;
 	g_screen = (g_deviceIdx == 0xff) ? SC_CAPTURE : SC_HOME;
+	g_serverStatus = -1;
+	g_pingInFlight = false;
 	g_homeCursor = 0;
 	g_error.clear();
 	GenerateStrokes(ImGui::GetIO().DisplaySize);

@@ -37,8 +37,14 @@ namespace sf4e {
 
 		void Create(const std::string& sidecarHash, const std::string& name);
 		void Join(const std::string& lobbyCode, const std::string& sidecarHash, const std::string& name);
+		// Asks the server whether it is there. Done with `code` empty on
+		// success; `lobbiesInUse` and `capacity` are filled in.
+		void Ping();
 		void Cancel();
 		void Poll();
+
+		int lobbiesInUse = 0;
+		int capacity = 0;
 
 		// "a.b.c.d:port" for the resolved session endpoint, for StartSession.
 		std::string SessionAddress() const;
