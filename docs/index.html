@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inside SF4Enhanced</title>
+<meta name="description" content="How a 2014 fighting game with dead online servers gained rollback netcode without a single game file being changed: the engine, the injection, GGPO, the lobby server, and what comes next.">
+<link rel="icon" href="app-icon.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f3f5f8; --bg-2: #e9edf3; --ink: #17202b; --ink-2: #4a5666; --ink-3: #7b8796;
+    --line: #d3dae3; --accent: #2447c9; --accent-ink: #fff; --accent-soft: #dfe6fb;
+    --ok: #1f7a4d; --ok-soft: #dcf2e6; --warn: #a86a0a; --warn-soft: #fbeccd; --bad: #b3312d; --bad-soft: #f8dcda;
+    --code-bg: #e6eaf1;
+    --display: "Barlow Condensed", "Arial Narrow", Arial, sans-serif;
+    --body: "Source Sans 3", "Segoe UI", Arial, sans-serif;
+    --mono: "JetBrains Mono", Consolas, "Courier New", monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg: #121820; --bg-2: #1a222c; --ink: #e5eaf1; --ink-2: #aab5c3; --ink-3: #7d8a9a; --line: #2c3745;
+    --accent: #7d97ff; --accent-ink: #0d1430; --accent-soft: #1f2a4d; --ok: #5fcf92; --ok-soft: #14301f;
+    --warn: #f0b446; --warn-soft: #3a2a08; --bad: #f07a74; --bad-soft: #3d1614; --code-bg: #1c2532; } }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 17px; line-height: 1.55; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 40px 24px 96px; display: grid; grid-template-columns: 210px minmax(0,1fr); gap: 48px; }
+  @media (max-width: 860px) { .wrap { grid-template-columns: minmax(0,1fr); gap: 24px; } nav.toc { position: static !important; } }
+  nav.toc { position: sticky; top: 24px; align-self: start; font-size: 14px; }
+  nav.toc a { display: block; color: var(--ink-2); text-decoration: none; padding: 5px 0 5px 12px; border-left: 2px solid var(--line); }
+  nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); border-left-color: var(--accent); outline: none; }
+  nav.toc .dl { margin-top: 18px; padding: 10px 12px; background: var(--accent); color: var(--accent-ink); border-left: none; font-weight: 600; border-radius: 3px; }
+  nav.toc .dl:hover { color: var(--accent-ink); filter: brightness(1.1); }
+  main { min-width: 0; }
+  h1, h2, h3 { font-family: var(--display); line-height: 1.05; text-wrap: balance; margin: 0; }
+  h1 { font-size: 56px; font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: 34px; font-weight: 700; margin-top: 64px; padding-top: 20px; border-top: 2px solid var(--ink); }
+  h3 { font-size: 22px; font-weight: 600; margin-top: 30px; }
+  p { margin: 14px 0; max-width: 70ch; }
+  .lede { font-size: 20px; color: var(--ink-2); max-width: 64ch; }
+  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 14px; color: var(--ink-2); margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .meta b { color: var(--ink); font-weight: 600; }
+  code { font-family: var(--mono); font-size: 0.86em; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  ul, ol { padding-left: 22px; max-width: 72ch; } li { margin: 6px 0; } li b, p b { font-weight: 600; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 26px 0 8px; }
+  .tiles > div { background: var(--bg-2); border-left: 4px solid var(--accent); padding: 14px 16px; }
+  .tiles .k { font-family: var(--display); font-size: 26px; font-weight: 700; line-height: 1.1; }
+  .tiles .v { font-size: 15px; color: var(--ink-2); margin-top: 4px; }
+  .tiles .ok { border-left-color: var(--ok); } .tiles .warn { border-left-color: var(--warn); } .tiles .bad { border-left-color: var(--bad); }
+  .pill { display: inline-block; font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; white-space: nowrap; font-weight: 600; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); } .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .tablewrap { overflow-x: auto; margin: 18px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 15.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; border-bottom: 2px solid var(--ink); }
+  td:first-child { font-weight: 600; white-space: nowrap; }
+  .num { font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 14px; }
+  .note { background: var(--accent-soft); border-left: 4px solid var(--accent); padding: 12px 16px; margin: 20px 0; max-width: 76ch; }
+  figure { margin: 24px 0; } figcaption { font-size: 14px; color: var(--ink-2); margin-top: 8px; max-width: 70ch; }
+  .diagram { overflow-x: auto; }
+  .diagram svg { display: block; min-width: 720px; width: 100%; height: auto; font-family: var(--body); }
+  .diagram .box { fill: var(--bg-2); stroke: var(--line); stroke-width: 1.2; }
+  .diagram .box.hook { fill: var(--accent-soft); stroke: var(--accent); }
+  .diagram .box.game { fill: var(--bg); stroke: var(--ink-3); stroke-dasharray: 4 3; }
+  .diagram .box.net { fill: var(--ok-soft); stroke: var(--ok); }
+  .diagram text { fill: var(--ink); font-size: 13px; }
+  .diagram text.small { font-size: 11.5px; fill: var(--ink-2); }
+  .diagram text.mono { font-family: var(--mono); font-size: 11.5px; }
+  .diagram text.lbl { fill: var(--ink-3); font-size: 11px; }
+  .diagram .arrow { stroke: var(--ink-2); stroke-width: 1.4; fill: none; marker-end: url(#ah); }
+  .diagram .arrow.roll { stroke: var(--bad); }
+  .steps { display: grid; gap: 4px; margin-top: 16px; }
+  .step { display: grid; grid-template-columns: 56px minmax(0,1fr); gap: 14px; padding: 14px 0; border-top: 1px solid var(--line); }
+  .step .n { font-family: var(--display); font-size: 36px; font-weight: 700; color: var(--accent); line-height: 1; }
+  .step h3 { margin-top: 0; font-size: 21px; } .step p { margin: 6px 0 0; }
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+  .two > div { background: var(--bg-2); padding: 14px 18px; } .two h3 { margin-top: 0; font-size: 20px; } .two ul { margin: 8px 0 0; padding-left: 18px; font-size: 15.5px; }
+  a { color: var(--accent); }
+  .hero-icon { float: right; width: 96px; height: 96px; margin: 0 0 12px 24px; border-radius: 18px; }
+  footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 14px; color: var(--ink-2); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="toc" aria-label="Contents">
+    <div class="eyebrow">Contents</div>
+    <a href="#tl">In one minute</a>
+    <a href="#play">How you play</a>
+    <a href="#game">The game</a>
+    <a href="#mod">How the mod gets in</a>
+    <a href="#rollback">What rollback is</a>
+    <a href="#ggpo">How GGPO was added</a>
+    <a href="#proof">Proving it works</a>
+    <a href="#online">The lobby server</a>
+    <a href="#ops">How it is managed</a>
+    <a href="#next">Next steps</a>
+    <a class="dl" href="https://github.com/fabeloper/sf4e/releases/latest">Download the latest release</a>
+  </nav>
+
+  <main>
+    <img class="hero-icon" src="app-icon.png" alt="SF4Enhanced icon" width="96" height="96">
+    <div class="eyebrow">SF4Enhanced · what's behind it</div>
+    <h1>Inside SF4Enhanced</h1>
+    <p class="lede">How a 2014 fighting game with dead online servers gained rollback netcode without a single game file being changed: the engine, the injection, the save states, GGPO, the lobby, the server, and what it takes to keep all of it running.</p>
+    <div class="meta">
+      <span><b>Game</b> Ultra Street Fighter IV, Steam, executable 2.0.0.93908</span>
+      <span><b>Source</b> <a href="https://github.com/fabeloper/sf4e">github.com/fabeloper/sf4e</a>, built on sf4e by Anthony Danducci</span>
+      <span><b>Status</b> playable: two-player online matches through a live lobby server, in-game lobby, rematch flow</span>
+    </div>
+
+    <h2 id="tl">In one minute</h2>
+    <div class="tiles">
+      <div class="ok"><div class="k">Nothing is installed into the game</div><div class="v">SF4Enhanced.exe starts the game and loads the mod into its memory. Delete the folder to uninstall.</div></div>
+      <div class="ok"><div class="k">Rollback comes from GGPO</div><div class="v">The library behind many rollback fighters, wired into the game's own frame loop.</div></div>
+      <div class="ok"><div class="k">Save states are the game's own</div><div class="v">Training mode already knew how to save and restore a fight. Rollback borrows that.</div></div>
+      <div class="ok"><div class="k">Lobby codes, no IPs</div><div class="v">An in-game lobby, a six-character code, a server that relays. Nobody forwards a port.</div></div>
+      <div class="warn"><div class="k">Still early</div><div class="v">Two players per lobby, one known gap in the save state, one home server. It works; it's being tested.</div></div>
+    </div>
+
+    <h2 id="play">How you play</h2>
+    <ol>
+      <li>Have Steam running. Extract the release anywhere except the game folder and run <code>SF4Enhanced.exe</code>. It finds the game by itself.</li>
+      <li>Main menu, <b>Multiplayer Battle</b>. The lobby takes over the screen. Press <b>Start</b> on the controller you'll play with.</li>
+      <li>One player chooses <b>Create lobby</b> and gets a code like <code>K7PQ2M</code>. The other chooses <b>Join with code</b>.</li>
+      <li>Pick a character, costume, colour, Ultra and edition, then press <b>Start</b> to ready up. When both are ready, the fight begins.</li>
+      <li>When it ends: <b>Rematch</b>, <b>Change character</b> or <b>Leave</b>.</li>
+    </ol>
+    <p>The lobby is driven from the controller: d-pad or stick to move, A to confirm, B to go back, left and right along the options row, bumpers to change a value. Keyboard works too. Input delay lives on the home screen; two frames is a good start on a normal connection.</p>
+
+    <h2 id="game">The game, and why this is possible at all</h2>
+    <p>Ultra Street Fighter IV runs on an engine by Dimps. Four properties of the Steam build make a rollback mod feasible where it would be hopeless for most games.</p>
+    <ul>
+      <li><b>One fixed binary.</b> The executable has not changed in years and is loaded at the same memory address every run, because it was built without address randomization. Every function the mod needs sits at a known, stable offset.</li>
+      <li><b>Full class names inside the binary.</b> The build kept its C++ runtime type information, all 975 class names, so any object in memory can be asked what it is. That turned days of guesswork into readable diagnostics.</li>
+      <li><b>A built-in save-state system.</b> Training mode's "save position, load position" is implemented with <i>memento</i> objects: every battle subsystem knows how to write its state into a buffer and read it back. Rollback needs exactly that, dozens of times per second.</li>
+      <li><b>A deterministic, fixed-step simulation.</b> The fight advances in exact 60ths of a second from a seeded random number generator. Given the same inputs, two machines compute the same fight, which is the entire premise of rollback.</li>
+    </ul>
+
+    <h2 id="mod">How the mod gets in without touching a file</h2>
+    <p>The mod is two programs. <code>SF4Enhanced.exe</code> is what you double-click. <code>Sidecar.dll</code> is the mod itself, and it only ever exists inside the running game.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 900 250" role="img" aria-label="How the launcher injects the mod into the game process">
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill: var(--ink-2)"/></marker></defs>
+        <rect class="box hook" x="20" y="40" width="190" height="70" rx="3"/>
+        <text x="115" y="66" text-anchor="middle">SF4Enhanced.exe</text>
+        <text x="115" y="84" text-anchor="middle" class="small">finds the game via Steam's registry</text>
+        <text x="115" y="99" text-anchor="middle" class="small">carries the server address</text>
+        <rect class="box game" x="260" y="40" width="190" height="70" rx="3"/>
+        <text x="355" y="66" text-anchor="middle">SSFIV.exe, suspended</text>
+        <text x="355" y="84" text-anchor="middle" class="small">started by the launcher, not Steam,</text>
+        <text x="355" y="99" text-anchor="middle" class="small">before its first instruction runs</text>
+        <rect class="box hook" x="500" y="40" width="190" height="70" rx="3"/>
+        <text x="595" y="66" text-anchor="middle">Sidecar.dll injected</text>
+        <text x="595" y="84" text-anchor="middle" class="small">Microsoft Detours loads it into</text>
+        <text x="595" y="99" text-anchor="middle" class="small">the game's memory</text>
+        <rect class="box game" x="740" y="40" width="140" height="70" rx="3"/>
+        <text x="810" y="66" text-anchor="middle">Game resumes</text>
+        <text x="810" y="84" text-anchor="middle" class="small">with ~45 of its own</text>
+        <text x="810" y="99" text-anchor="middle" class="small">functions redirected</text>
+        <path class="arrow" d="M210 75H258"/><path class="arrow" d="M450 75H498"/><path class="arrow" d="M690 75H738"/>
+        <text x="20" y="150" class="lbl">WHAT GETS REDIRECTED (a detour: the game calls its function, lands in ours, ours calls the original when it wants to)</text>
+        <rect class="box" x="20" y="162" width="200" height="60" rx="3"/><text x="120" y="184" text-anchor="middle">Battle update</text><text x="120" y="202" text-anchor="middle" class="small">the fight's frame loop → GGPO</text>
+        <rect class="box" x="240" y="162" width="200" height="60" rx="3"/><text x="340" y="184" text-anchor="middle">Controller reads</text><text x="340" y="202" text-anchor="middle" class="small">GGPO's inputs; muted under the lobby</text>
+        <rect class="box" x="460" y="162" width="200" height="60" rx="3"/><text x="560" y="184" text-anchor="middle">Save / restore state</text><text x="560" y="202" text-anchor="middle" class="small">extended to cover more</text>
+        <rect class="box" x="680" y="162" width="200" height="60" rx="3"/><text x="780" y="184" text-anchor="middle">Menus, sound, HUD, D3D</text><text x="780" y="202" text-anchor="middle" class="small">lobby entry, silent rollbacks, overlay</text>
+      </svg>
+      <figcaption>Because everything happens in memory, Steam's file verification still passes, and starting the game from Steam normally gives the untouched original. The one file the launcher creates is a six-byte <code>steam_appid.txt</code> so Steam's own library recognizes the game when it isn't started from the Steam client.</figcaption>
+    </figure>
+    <p>The redirection is done with Microsoft Detours, a library Microsoft publishes for exactly this. The mod knows where each game function lives because a separate layer of the code, called Dimps after the engine, is a hand-built map of the executable: about two hundred functions and data fields, each at a fixed offset, produced by reverse engineering over several years by the original author.</p>
+    <div class="note">Steam's own online modes are switched off while the mod runs, because the game is running outside Steam's normal launch path. That is why "Multiplayer Battle" opens the mod's lobby instead.</div>
+
+    <h2 id="rollback">What rollback is, in plain terms</h2>
+    <p>Online, your opponent's button press takes tens of milliseconds to reach you. The old approach, delay-based netcode, waits for it before showing anything, so every input feels late. Rollback does the opposite: it <b>guesses</b> that the opponent kept doing what they were doing, shows the frame immediately, and when the real input arrives a few frames later, it quietly <b>rewinds</b> the fight to that moment, <b>replays</b> the frames with the correct input, and continues. Done right, the guess is correct most of the time and the corrections are a few frames long and barely visible.</p>
+    <p>To do that, four things must be true, and each one maps to a piece of the mod:</p>
+    <ul>
+      <li>The game must be able to <b>save its entire fight state every frame</b> and <b>restore any recent one</b> instantly. That is the memento system, extended.</li>
+      <li>The game must accept <b>inputs from the network</b> instead of the controller. That is the controller-read detour.</li>
+      <li>Given the same inputs, both machines must compute <b>exactly the same fight</b>. That is determinism, and it is what the verification tools exist to prove.</li>
+      <li>Something must run the prediction, rewind and replay bookkeeping and the networking. That is GGPO.</li>
+    </ul>
+
+    <h2 id="ggpo">How GGPO was added</h2>
+    <p>GGPO is the open-source library that pioneered rollback for fighting games. It does not know anything about Street Fighter. It asks the game for five things through callbacks: save your state, load a state, advance one frame, tell me your inputs, and here are the synchronized inputs for this frame. The mod supplies all five from inside the detoured battle loop.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 900 330" role="img" aria-label="The per-frame loop with GGPO">
+        <text x="20" y="24" class="lbl">EVERY FRAME, INSIDE THE DETOURED BATTLE UPDATE</text>
+        <rect class="box game" x="20" y="36" width="150" height="46" rx="3"/><text x="95" y="56" text-anchor="middle">Read your controller</text><text x="95" y="72" text-anchor="middle" class="small">the real one</text>
+        <rect class="box hook" x="205" y="36" width="160" height="46" rx="3"/><text x="285" y="56" text-anchor="middle">Give it to GGPO</text><text x="285" y="72" text-anchor="middle" class="small">it sends it to the opponent</text>
+        <rect class="box hook" x="400" y="36" width="160" height="46" rx="3"/><text x="480" y="56" text-anchor="middle">Ask GGPO for both inputs</text><text x="480" y="72" text-anchor="middle" class="small">opponent's is predicted if late</text>
+        <rect class="box hook" x="595" y="36" width="130" height="46" rx="3"/><text x="660" y="56" text-anchor="middle">Feed them to the game</text><text x="660" y="72" text-anchor="middle" class="small">via the pad detour</text>
+        <rect class="box game" x="760" y="36" width="120" height="46" rx="3"/><text x="820" y="56" text-anchor="middle">Run the real</text><text x="820" y="72" text-anchor="middle" class="small">frame update</text>
+        <path class="arrow" d="M170 59H203"/><path class="arrow" d="M365 59H398"/><path class="arrow" d="M560 59H593"/><path class="arrow" d="M725 59H758"/>
+        <path class="arrow" d="M820 82V110"/>
+        <rect class="box hook" x="740" y="112" width="160" height="46" rx="3"/><text x="820" y="132" text-anchor="middle">Tell GGPO: frame done</text><text x="820" y="148" text-anchor="middle" class="small">it saves the state now</text>
+        <text x="20" y="200" class="lbl">WHEN THE OPPONENT'S REAL INPUT ARRIVES AND THE GUESS WAS WRONG</text>
+        <rect class="box" x="20" y="212" width="250" height="92" rx="3"/><text x="32" y="232">Load the last correct state</text><text x="32" y="250" class="small">88 memento buffers swapped back into</text><text x="32" y="265" class="small">place, plus the extra state the mod</text><text x="32" y="280" class="small">tracks on top: HUD, tasks, Scaleform</text><text x="32" y="295" class="small">animations, sound, battle-flow statics</text>
+        <rect class="box" x="300" y="212" width="250" height="92" rx="3"/><text x="312" y="232">Replay the frames</text><text x="312" y="250" class="small">the same frame update, once per</text><text x="312" y="265" class="small">frame, with the corrected inputs;</text><text x="312" y="280" class="small">up to 8 frames, in one render frame</text>
+        <rect class="box" x="580" y="212" width="300" height="92" rx="3"/><text x="592" y="232">Only then let sound play</text><text x="592" y="250" class="small">sounds triggered during a replay would</text><text x="592" y="265" class="small">be wrong half the time; the mod runs a</text><text x="592" y="280" class="small">silent shadow of the sound system and</text><text x="592" y="295" class="small">reconciles the real one on confirmed frames</text>
+        <path class="arrow roll" d="M740 135H300 Q290 135 290 145 V210"/>
+        <text x="500" y="128" class="lbl" text-anchor="middle" style="fill: var(--bad)">rollback</text>
+      </svg>
+      <figcaption>Blue boxes are mod code, dashed boxes are untouched game code. GGPO keeps ten save slots: its eight-frame prediction window plus two spare.</figcaption>
+    </figure>
+
+    <h3>The save state, and what the game did not save</h3>
+    <p>The clever part of the original design is that the game's memento buffers are not copied. Each frame, the mod asks every subsystem to record itself, then <i>steals</i> the buffers and hands the game empty ones. Loading a state is putting the stolen buffers back and asking every subsystem to restore. That is fast enough to do sixty times a second.</p>
+    <p>Training mode only needed to save what a paused fight needs, so several things were never in the mementos and had to be added by hand: the battle's state machine, the HUD announcements, the Scaleform animation pool that drives everything drawn over the fight, the engine's task scheduler, and a full model of which sounds are playing. Each of those is a place where a subtle mistake shows up as a desync, which is why the next section exists.</p>
+
+    <h3>Two other things that had to be true</h3>
+    <ul>
+      <li><b>Same random numbers.</b> The lobby's creator picks a seed and both games start the match from it.</li>
+      <li><b>No pausing.</b> Pause is disabled during an online match, since one side pausing would mean the other side predicting forever.</li>
+    </ul>
+
+    <h2 id="proof">Proving it works, and what was found</h2>
+    <p>Rollback fails silently: nothing crashes, the two players just slowly end up in different fights. So the first work on this fork was tooling that makes that failure visible and attributable, without needing a second player.</p>
+    <div class="tablewrap"><table>
+      <tr><th>Tool</th><th>What it does</th><th>Why it mattered</th></tr>
+      <tr><td>Sync test</td><td>Plays a normal match with both sides local while GGPO rolls back and re-simulates every N frames, comparing a checksum of the full state each time. Randomized inputs turn it into a fuzzer.</td><td>The only way to test rollback on one PC. Found that re-simulation did not reproduce the original.</td></tr>
+      <tr><td>Idempotence check</td><td>Save, restore immediately, save again, with no frames in between. The two must match byte for byte. Runs several controlled variants from a common baseline.</td><td>Separated "the restore loses state" from "the simulation is non-deterministic". Every hypothesis it tested was settled by measurement rather than argument.</td></tr>
+      <tr><td>Pointer-aware checksums</td><td>Memory addresses inside the state are replaced by their order of appearance before hashing.</td><td>Objects are re-allocated on every save, so raw checksums differed on every frame. This also makes checksums comparable across two machines later.</td></tr>
+      <tr><td>Class naming</td><td>Reads the game's own runtime type information to name any object.</td><td>"key #6 at 0x0FC2FD40" became "Chara::Actor".</td></tr>
+      <tr><td>Gameplay divergence</td><td>Compares positions, health, meters and status separately from the full checksum.</td><td>Distinguishes bookkeeping differences from the ones that change the match.</td></tr>
+      <tr><td>Crash reporter</td><td>Logs the fault, module and stack, and writes a minidump.</td><td>Caught its first real bug within minutes of the first release: a crash on alt-tab, fixed the same hour.</td></tr>
+    </table></div>
+    <h3>Results so far</h3>
+    <ul>
+      <li><span class="pill ok">fixed</span> <b>Scaleform animations restored in the wrong order.</b> The HUD animation pool was restored first and then disturbed by a later subsystem's restore. Restoring it last removes the difference entirely; confirmed across four independent runs.</li>
+      <li><span class="pill ok">fixed</span> Matches dropped after a one-second network hiccup; the timeout is now ten seconds. Time-sync froze the whole game for up to 130 ms; it now skips frames while rendering continues.</li>
+      <li><span class="pill ok">fixed</span> A crash on device reset (alt-tab out of fullscreen), a copy-paste slip that broke the training HUD after every restore, and log output that silently lost the end of every run.</li>
+      <li><span class="pill warn">open</span> <b>Both character actors lose some state on restore.</b> Deterministic, localized to runs of 3D vectors near the end of each actor's memento, and not converging after repeated restores. The gameplay-divergence counter will say whether it changes matches in practice; across the first dozens of real online matches it has not produced a visible desync.</li>
+    </ul>
+
+    <h2 id="online">The lobby server: codes, a relay, and no port forwarding</h2>
+    <p>Two games behind two home routers cannot talk to each other directly. The original project required both players to forward ports and exchange IP addresses. SF4Enhanced replaces that with a small server that both games connect <i>out</i> to, and an in-game lobby in front of it.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 900 250" role="img" aria-label="Network topology with the lobby server and relay">
+        <rect class="box game" x="20" y="90" width="170" height="70" rx="3"/><text x="105" y="116" text-anchor="middle">Player 1's game</text><text x="105" y="134" text-anchor="middle" class="small">behind a home router</text><text x="105" y="150" text-anchor="middle" class="small">Create lobby → code</text>
+        <rect class="box game" x="710" y="90" width="170" height="70" rx="3"/><text x="795" y="116" text-anchor="middle">Player 2's game</text><text x="795" y="134" text-anchor="middle" class="small">behind another router</text><text x="795" y="150" text-anchor="middle" class="small">Join with code</text>
+        <rect class="box net" x="300" y="30" width="300" height="190" rx="3"/>
+        <text x="450" y="54" text-anchor="middle">LobbyServer.exe</text>
+        <text x="450" y="70" text-anchor="middle" class="small">one exe, all UDP</text>
+        <rect class="box" x="315" y="84" width="270" height="36" rx="3"/><text x="325" y="100" class="mono">matchmaker :23400</text><text x="325" y="113" class="small">create → code; join code → which lobby</text>
+        <rect class="box" x="315" y="128" width="270" height="36" rx="3"/><text x="325" y="144" class="mono">session per lobby :23401-23420</text><text x="325" y="157" class="small">characters, stage, seed, ready, version check</text>
+        <rect class="box" x="315" y="172" width="270" height="36" rx="3"/><text x="325" y="188" class="mono">relay per lobby :24001-24020</text><text x="325" y="201" class="small">forwards GGPO packets between the two</text>
+        <path class="arrow" d="M190 125H298"/><path class="arrow" d="M710 125H602"/>
+        <text x="244" y="118" class="lbl" text-anchor="middle">outbound only</text><text x="656" y="118" class="lbl" text-anchor="middle">outbound only</text>
+        <text x="20" y="240" class="lbl">EACH GAME IS TOLD "YOUR OPPONENT IS AT THE RELAY'S ADDRESS". GGPO NEVER LEARNS THE OTHER PLAYER'S REAL IP, AND NEITHER DO THE PLAYERS.</text>
+      </svg>
+      <figcaption>Every packet crosses the server once, so the relay adds one hop of latency. Real matches on the current server have measured 16 to 50 ms round trip between players in the same country. A planned upgrade is to try a direct connection first and keep the relay as the fallback.</figcaption>
+    </figure>
+    <h3>What the server enforces</h3>
+    <ul>
+      <li>Twenty lobbies, two players each. Empty lobbies are recycled after ninety seconds.</li>
+      <li>The lobby remembers the creator's build hash; a joiner with a different build is refused with a clear message, so mismatched versions never desync each other.</li>
+      <li>Relay endpoints time out after twenty seconds of silence.</li>
+    </ul>
+    <p>The address of the server is built into the launcher and never shown on screen; the lobby's home screen only reports whether it is online. Anyone can run their own server from the release's server package, and a <code>server.txt</code> next to the launcher quietly overrides the built-in one.</p>
+
+    <h2 id="ops">How it is managed</h2>
+    <div class="two">
+      <div>
+        <h3>Code</h3>
+        <ul>
+          <li>Fork at <a href="https://github.com/fabeloper/sf4e">github.com/fabeloper/sf4e</a>. The original Codeberg repository is the <code>upstream</code> remote so its engine fixes can be merged.</li>
+          <li>The engine map in <code>src/Dimps</code> is kept unmodified; fork work lives in <code>src/sf4e</code>, <code>src/session</code> and <code>src/server</code>.</li>
+          <li>Every change is a commit with a message explaining what was measured, not just what was typed.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Build</h3>
+        <ul>
+          <li>Visual Studio 2022 Build Tools, 32-bit, plus vcpkg for dependencies.</li>
+          <li><code>deploy/pack-all.cmd</code> builds both packages and bakes the server address from a local file that never enters the repository.</li>
+          <li>The game must not be running during a build; Windows locks the loaded DLL.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Release</h3>
+        <ul>
+          <li>Two artifacts per release: the player zip and the server zip, tagged and published on GitHub.</li>
+          <li>Version gating is automatic through the build hash: old and new builds refuse each other.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Server</h3>
+        <ul>
+          <li>Runs on any Windows machine. Today: a spare laptop, lid closed, wired to the home router, with a one-time setup script that opens the firewall, prevents sleep and restarts it at boot.</li>
+          <li><code>lobby.log</code> shows every create, join and relay pairing.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Bug reports</h3>
+        <ul>
+          <li><code>%APPDATA%\sf4e\logs\sf4e.log</code> from both players, with network stats logged every ten seconds.</li>
+          <li>The newest file in <code>%APPDATA%\sf4e\crash\</code> if the game closed.</li>
+          <li>Characters, who created the lobby, and what each player used to play.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Ports (all UDP)</h3>
+        <ul>
+          <li><span class="num">23400</span> matchmaker</li>
+          <li><span class="num">23401-23420</span> one session per lobby</li>
+          <li><span class="num">24001-24020</span> one relay per lobby</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2 id="next">Next steps, in order</h2>
+    <div class="steps">
+      <div class="step"><div class="n">1</div><div><h3>More players, more logs</h3><p>Every match logs ping and frames-behind on both sides and counts gameplay divergences. The next questions, whether the relay is fast enough across countries and whether the actor gap ever changes a match, are answered by volume.</p></div></div>
+      <div class="step"><div class="n">2</div><div><h3>A permanent address, then a rented server</h3><p>A dynamic-DNS name so the built-in address never goes stale, then a VPS so nobody's laptop has to be on. After that, try a direct peer connection first and keep the relay as the fallback.</p></div></div>
+      <div class="step"><div class="n">3</div><div><h3>Portraits and polish</h3><p>Character portraits and stage previews in the lobby, a ping readout before you ready up, and a spectator seat.</p></div></div>
+      <div class="step"><div class="n">4</div><div><h3>Close the actor save-state gap</h3><p>Read the character actor's save and restore routines in the disassembly to find which fields one writes and the other does not. The diagnostics are in place to confirm the fix in minutes.</p></div></div>
+    </div>
+
+    <footer>
+      <p><b>sf4e</b> is the work of Anthony Danducci: the reverse-engineered engine map, the memento-based save states, the GGPO integration, the sound shadowing and the session protocol. SF4Enhanced adds the verification tooling and the fixes it found, the lobby server with codes and relay, the in-game lobby and rematch flow, the crash reporter, packaging and releases. GGPO is by Tony Cannon and GroundStorm Studios. Street Fighter and Ultra Street Fighter IV are copyright CAPCOM; this is an unofficial fan project.</p>
+    </footer>
+  </main>
+</div>
+</body>
+</html>
