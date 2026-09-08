@@ -32,6 +32,7 @@
 #include "sf4e.hxx"
 #include "sf4e__Game.hxx"
 #include "sf4e__GameEvents.hxx"
+#include "sf4e__Lobby.hxx"
 #include "sf4e__Game__Battle.hxx"
 #include "sf4e__Game__Battle__Hud.hxx"
 #include "sf4e__Game__Battle__System.hxx"
@@ -378,6 +379,23 @@ void fSystem::BattleUpdate() {
         }
         fPadSystem::playbackFrame = -1;
         nExtraFramesToSimulate = 0;
+    }
+
+    // Online match over: the moment the flow reaches the match result, the
+    // deciding round has just ended, so whoever has more life left won.
+    // Time-over and KO both satisfy that; a double KO reads as a draw.
+    static DWORD lastFlow = 0xffffffff;
+    DWORD flow = *rSystem::staticVars.CurrentBattleFlow;
+    if (flow != lastFlow) {
+        if (ggpo && !syncTest.bActive && (flow == BF__MATCH_OVER || flow == BF__MATCH_RESULT)) {
+            StateSnapshot s;
+            BuildSnapshot(_this, s);
+            int winner = -1;
+            if (s.chara[0].vit.integral > s.chara[1].vit.integral) winner = 0;
+            else if (s.chara[1].vit.integral > s.chara[0].vit.integral) winner = 1;
+            sf4e::Lobby::OnMatchResult(winner, -1, -1);
+        }
+        lastFlow = flow;
     }
 
     if (bHaltAfterNext) {
