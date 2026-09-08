@@ -1,3 +1,4 @@
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -114,6 +115,7 @@ namespace {
 	// ---------------------------------------------------------------- input
 	struct Input {
 		bool up, down, left, right, confirm, back, alt, lb, rb, start;
+		bool copy, paste;   // Ctrl+C / Ctrl+V on the keyboard
 		Input() { memset(this, 0, sizeof(*this)); }
 	};
 	WORD g_prevPad = 0;
@@ -166,6 +168,9 @@ namespace {
 		in.lb = EDGE_PAD(XINPUT_GAMEPAD_LEFT_SHOULDER) || EDGE_KEY(VK_PRIOR);
 		in.rb = EDGE_PAD(XINPUT_GAMEPAD_RIGHT_SHOULDER) || EDGE_KEY(VK_NEXT);
 		in.start = EDGE_PAD(XINPUT_GAMEPAD_START) || EDGE_KEY(VK_F1);
+		bool ctrl = KeyDown(VK_CONTROL);
+		in.copy = ctrl && EDGE_KEY('C');
+		in.paste = ctrl && EDGE_KEY('V');
 		#undef EDGE_PAD
 		#undef EDGE_KEY
 
@@ -175,7 +180,26 @@ namespace {
 	}
 
 	// Typed characters for the code screen, so keyboard users just type.
+	void Flash(const char* msg, bool good = false);
+
+	// Appends valid code characters from `text`, uppercased, up to six.
+	void AppendCodeText(const char* text) {
+		for (const char* p = text; p && *p && g_code.size() < 6; p++) {
+			char c = (char)toupper((unsigned char)*p);
+			if (strchr(CODE_CHARS, c) && c != 0) g_code += c;
+		}
+	}
+
+	void PasteCode() {
+		const char* clip = ImGui::GetClipboardText();
+		if (!clip || !*clip) { Flash("Nothing to paste"); return; }
+		g_code.clear();
+		AppendCodeText(clip);
+		if (g_code.empty()) Flash("The clipboard doesn't hold a lobby code");
+	}
+
 	void ReadTypedCode() {
+		if (KeyDown(VK_CONTROL)) return;  // Ctrl+V is a paste, not a letter
 		for (int i = 0; i < CODE_CHAR_COUNT; i++) {
 			char c = CODE_CHARS[i];
 			int vk = (c >= '0' && c <= '9') ? c : c;  // letters and digits map to their VK codes
@@ -255,15 +279,18 @@ namespace {
 		dl->AddText(g_fontBody, 22, ImVec2(60, ds.y - 40), PAPER, hint);
 	}
 
-	void Flash(const char* msg) {
+	bool g_flashGood = false;
+
+	void Flash(const char* msg, bool good) {
 		g_error = msg;
-		g_errorUntil = GetTickCount64() + 5000;
+		g_flashGood = good;
+		g_errorUntil = GetTickCount64() + (good ? 2500 : 5000);
 	}
 
 	void DrawError(ImDrawList* dl, ImVec2 ds) {
 		if (g_error.empty() || GetTickCount64() > g_errorUntil) return;
 		ImVec2 sz = TextSize(g_fontBody, 24, g_error.c_str());
-		Slant(dl, ImVec2(ds.x * 0.5f - sz.x * 0.5f - 24, ds.y - 110), ImVec2(ds.x * 0.5f + sz.x * 0.5f + 24, ds.y - 70), RED);
+		Slant(dl, ImVec2(ds.x * 0.5f - sz.x * 0.5f - 24, ds.y - 110), ImVec2(ds.x * 0.5f + sz.x * 0.5f + 24, ds.y - 70), g_flashGood ? GREEN : RED);
 		dl->AddText(g_fontBody, 24, ImVec2(ds.x * 0.5f - sz.x * 0.5f, ds.y - 102), PAPER, g_error.c_str());
 	}
 
@@ -465,7 +492,7 @@ namespace {
 			char s[2] = { extra ? 0 : CODE_CHARS[i], 0 };
 			TextCentered(dl, g_fontHead, 34, (a.x + b.x) * 0.5f, a.y + 10, extra ? label : s, PAPER, false);
 		}
-		DrawHint(dl, ds, "Move: pick a letter     A: add     B / Backspace: delete     Start: join     Y: back");
+		DrawHint(dl, ds, "Move: pick a letter     A: add     B / Backspace: delete     Y / Ctrl+V: paste     Start: join");
 
 		int rows = (total_items + JOIN_COLS - 1) / JOIN_COLS;
 		if (in.left) g_joinCursor = (g_joinCursor + total_items - 1) % total_items;
@@ -479,7 +506,7 @@ namespace {
 			else submit = true;
 		}
 		if (in.back) { if (!g_code.empty()) g_code.pop_back(); else g_screen = SC_HOME; }
-		if (in.alt) g_screen = SC_HOME;
+		if (in.alt || in.paste) PasteCode();
 		if (submit) {
 			if (g_code.size() < 6) { Flash("The code has six characters"); }
 			else { g_mm.Join(g_code, sf4e::sidecarHash, g_name); g_screen = SC_CONNECTING; }
@@ -531,7 +558,7 @@ namespace {
 			ImVec2 sz = TextSize(g_fontHead, 40, items[i]);
 			float x = ds.x * 0.5f - sz.x * 0.5f;
 			if (sel) Slant(dl, ImVec2(x - 40, y - 6), ImVec2(x + sz.x + 40, y + 52), i == 2 ? RED : (i == 0 ? GREEN : RED));
-			TextOutlined(dl, g_fontHead, 40, ImVec2(x, y), items[i], sel ? (i == 0 ? INK : PAPER) : PAPER_DIM);
+			TextOutlined(dl, g_fontHead, 40, ImVec2(x, y), items[i], sel ? PAPER : PAPER_DIM);
 			y += 72;
 		}
 		DrawHint(dl, ds, "Up/Down: choose     A: confirm     Start: rematch with the same character");
@@ -581,7 +608,11 @@ namespace {
 		DrawHeader(dl, ds, "LOBBY", nullptr);
 		// The code, large and gold, where the creator's eye lands first.
 		TextOutlined(dl, g_fontTitle, 96, ImVec2(ds.x - 60 - TextSize(g_fontTitle, 96, code.c_str()).x, 30), code.c_str(), GOLD, 3.0f);
-		dl->AddText(g_fontSmall, 20, ImVec2(ds.x - 60 - 300, 130), PAPER_DIM, g_isCreator ? "give this code to your opponent" : "you joined this lobby");
+		dl->AddText(g_fontSmall, 20, ImVec2(ds.x - 60 - 300, 130), PAPER_DIM, g_isCreator ? "give this code to your opponent   (Y / Ctrl+C: copy)" : "you joined this lobby");
+		if ((in.alt || in.copy) && !code.empty()) {
+			ImGui::SetClipboardText(code.c_str());
+			Flash("Code copied to the clipboard", true);
+		}
 
 		// Player cards.
 		float cardW = (ds.x - 120 - 40) * 0.5f, cardH = 110, cy = 170;
@@ -645,7 +676,8 @@ namespace {
 			ImVec2 a(ax, ay), b(ax + sz.x + 60, ay + 50);
 			Slant(dl, a, b, cursor ? (i == 0 ? GREEN : RED) : CARD, 10);
 			if (!cursor) dl->AddRect(a, b, CARD_EDGE, 0, 0, 1);
-			dl->AddText(g_fontHead, 30, ImVec2(a.x + 30, a.y + 8), cursor ? INK : PAPER_DIM, acts[i]);
+			if (cursor) TextOutlined(dl, g_fontHead, 30, ImVec2(a.x + 30, a.y + 8), acts[i], PAPER);
+			else dl->AddText(g_fontHead, 30, ImVec2(a.x + 30, a.y + 8), PAPER_DIM, acts[i]);
 			ax = b.x + 20;
 		}
 		const char* hint = g_lobbyRow == 1
