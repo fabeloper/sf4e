@@ -744,6 +744,7 @@ void DrawGGPOStatsOverlay(GGPOSession* ggpo, fSystem::PlayerConnectionInfo* play
 				fSystem::syncTest.nMismatches,
 				fSystem::syncTest.nGameplayMismatches
 			);
+			End();
 			return;
 		}
 		Columns(2);
@@ -758,12 +759,14 @@ void DrawGGPOStatsOverlay(GGPOSession* ggpo, fSystem::PlayerConnectionInfo* play
 		}
 		Text("%d", fSystem::snapshotMap.size());  NextColumn();
 		Columns(1);
+		End();
 		return;
 	}
 	else {
 		GGPOErrorCode err = ggpo_get_network_stats(ggpo, players[i].handle, &stats);
 		if (!GGPO_SUCCEEDED(err)) {
 			spdlog::warn("Couldn't get GGPO stats for overlay: {}", (int)err);
+			End();
 			return;
 		}
 

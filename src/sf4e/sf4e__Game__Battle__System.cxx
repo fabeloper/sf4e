@@ -263,6 +263,12 @@ int fSystem::RestoreFromMemento(Memento* m, GameMementoKey::MementoID* id) {
     return (this->*rSystem::mementoableMethods.RestoreFromMemento)(m, id);
 }
 
+// When a spectator last stopped receiving input, or 0 while it flows. Reset
+// for every session: left over from an earlier bailout it would fire the
+// moment the next match started.
+static ULONGLONG g_spectatorStarvedSince = 0;
+static bool g_spectatorLoggedFirstFrame = false;
+
 // One simulated frame from the host's confirmed inputs, for a spectator that
 // has fallen behind. Returns false when the next frame has not arrived yet.
 static bool AdvanceSpectatorFrame(rSystem* _this) {
@@ -391,8 +397,14 @@ void fSystem::BattleUpdate() {
         // no disconnect timeout of its own. And after a hiccup on our side
         // the host's frames pile up, so simulate extra ones to close the gap.
         if (localPlayerHandle == GGPO_INVALID_HANDLE && !syncTest.bActive) {
-            static ULONGLONG starvedSince = 0;
+            ULONGLONG& starvedSince = g_spectatorStarvedSince;
             if (GGPO_SUCCEEDED(result)) {
+                if (!g_spectatorLoggedFirstFrame) {
+                    // The game's own frame counter must agree with GGPO's, or
+                    // the snapshots are labelled wrong and every comparison lies.
+                    g_spectatorLoggedFirstFrame = true;
+                    spdlog::info("Spectator: first frame simulated; game frame counter is now {}", rSystem::GetNumFramesSimulated_FixedPoint(_this)->integral);
+                }
                 starvedSince = 0;
                 GGPONetworkStats stats;
                 for (int extra = 0; extra < 3; extra++) {
@@ -727,6 +739,8 @@ void fSystem::StartSpectating(unsigned short localport, int num_players, char* h
         players[i].handle = GGPO_INVALID_HANDLE;
     }
     spdlog::info("GGPO: spectating {}:{} from local port {}", host_ip, host_port, localport);
+    g_spectatorStarvedSince = 0;
+    g_spectatorLoggedFirstFrame = false;
     GGPOSessionCallbacks cb = { 0 };
     cb.begin_game = ggpo_begin_game_callback;
     cb.advance_frame = ggpo_advance_frame_callback;

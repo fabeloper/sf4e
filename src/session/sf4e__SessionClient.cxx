@@ -269,11 +269,14 @@ int SessionClient::Step()
 					spdlog::error("Client: snapshot receipt: valid snapshot @ frame {} on receipt, confirm {}, sent {}", localSnapshot.frameIdx, localSnapshotIter->second.second.confirmed, localSnapshotIter->second.second.sent);
 				}
 				if (memcmp(&m.snapshot, &localSnapshot, sizeof(SessionProtocol::StateSnapshot)) != 0) {
-					if (bVerboseLogging) {
-						spdlog::error("Client: snapshot receipt: Desync detected!");
+					if (_spectator) {
+						spdlog::warn("Spectator: my state differs from the players at frame {}", m.snapshot.frameIdx);
 					}
-					MessageBoxA(NULL, "Client: snapshot receipt: Desync detected!", NULL, MB_OK);
-					*rSystem::GetReadyState(rSystem::staticMethods.GetSingleton()) = rSystem::RS_ISLEAVING;
+					else {
+						spdlog::error("Client: snapshot receipt: Desync detected at frame {}", m.snapshot.frameIdx);
+						MessageBoxA(NULL, "Client: snapshot receipt: Desync detected!", NULL, MB_OK);
+						*rSystem::GetReadyState(rSystem::staticMethods.GetSingleton()) = rSystem::RS_ISLEAVING;
+					}
 				}
 
 				if (bVerboseLogging) {
@@ -322,6 +325,10 @@ int SessionClient::Step()
 				spdlog::error("Client: snapshot reconciliation: checking snapshot @ {} due to mostRecentPredictiveFrame {}", localSnapshotIter->first, mostRecentPredictiveFrame);
 			}
 
+			if (_spectator) {
+				// A spectator's state is nobody else's business.
+				localSnapshotIter->second.second.sent = true;
+			}
 			if (!localSnapshotIter->second.second.sent) {
 				if (bVerboseLogging) {
 					spdlog::error("Client: snapshot reconciliation: snapshot @ {} not yet sent, confirmed val: {}", localSnapshotIter->first, localSnapshotIter->second.second.confirmed);
@@ -348,9 +355,14 @@ int SessionClient::Step()
 					// Caught up to the opponent- compare to a snapshot already sent by the opponent.
 					SessionProtocol::StateSnapshot& localSnapshot = localSnapshotIter->second.first;
 					if (memcmp(&remoteSnapshotIter->second, &localSnapshot, sizeof(SessionProtocol::StateSnapshot)) != 0) {
-						spdlog::error("Client: snapshot reconciliation: Desync detected from pending!");
-						MessageBoxA(NULL, "Client: snapshot reconciliation: Desync detected from pending!", NULL, MB_OK); // This tends to be where the issue occurs- how?!
-						*rSystem::GetReadyState(rSystem::staticMethods.GetSingleton()) = rSystem::RS_ISLEAVING;
+						if (_spectator) {
+							spdlog::warn("Spectator: my state differs from the players at frame {} (pending)", localSnapshotIter->first);
+						}
+						else {
+							spdlog::error("Client: snapshot reconciliation: Desync detected from pending at frame {}", localSnapshotIter->first);
+							MessageBoxA(NULL, "Client: snapshot reconciliation: Desync detected from pending!", NULL, MB_OK);
+							*rSystem::GetReadyState(rSystem::staticMethods.GetSingleton()) = rSystem::RS_ISLEAVING;
+						}
 					}
 					localSnapshotIter->second.second.confirmed = true;
 				}

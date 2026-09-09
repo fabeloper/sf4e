@@ -379,8 +379,15 @@ int SessionServer::Step()
 				_dataDirty = true;
 			}
 			else if (type == SessionProtocol::MT_BATTLE_SNAPSHOT) {
-				// Forward the snapshot to every other client.
+				// Forward the snapshot to every other client. Spectators only
+				// listen: their state must never end a players' match.
+				bool fromSpectator = false;
 				for (auto clientIter = clients.begin(); clientIter != clients.end(); clientIter++) {
+					if (clientIter->conn == conn && clientIter->data.spectator) {
+						fromSpectator = true;
+					}
+				}
+				for (auto clientIter = clients.begin(); clientIter != clients.end() && !fromSpectator; clientIter++) {
 					if (clientIter->conn != conn) {
 						_interface->SendMessageToConnection(
 							clientIter->conn, (const char*)pIncomingMsg->m_pData, pIncomingMsg->m_cbSize,
