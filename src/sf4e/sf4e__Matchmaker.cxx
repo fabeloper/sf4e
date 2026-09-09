@@ -107,13 +107,13 @@ void Matchmaker::Create(const std::string& sidecarHash, const std::string& name)
 	Send(req.dump());
 }
 
-void Matchmaker::Join(const std::string& lobbyCode, const std::string& sidecarHash, const std::string& name) {
+void Matchmaker::Join(const std::string& lobbyCode, const std::string& sidecarHash, const std::string& name, bool spectate) {
 	if (!_configured) {
 		state = State::Failed;
 		error = "no server configured";
 		return;
 	}
-	json req = { {"op", "join"}, {"code", lobbyCode}, {"hash", sidecarHash}, {"name", name} };
+	json req = { {"op", "join"}, {"code", lobbyCode}, {"hash", sidecarHash}, {"name", name}, {"spectate", spectate} };
 	Send(req.dump());
 }
 
@@ -177,6 +177,9 @@ void Matchmaker::Poll() {
 			}
 			else if (reason == "lobby_full") {
 				error = "that lobby already has two players";
+			}
+			else if (reason == "spectators_full") {
+				error = "that lobby has no spectator seats left";
 			}
 			else if (reason == "version_mismatch") {
 				error = "the other player runs a different sf4e build";

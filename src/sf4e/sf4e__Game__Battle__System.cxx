@@ -263,6 +263,26 @@ int fSystem::RestoreFromMemento(Memento* m, GameMementoKey::MementoID* id) {
     return (this->*rSystem::mementoableMethods.RestoreFromMemento)(m, id);
 }
 
+// One simulated frame from the host's confirmed inputs, for a spectator that
+// has fallen behind. Returns false when the next frame has not arrived yet.
+static bool AdvanceSpectatorFrame(rSystem* _this) {
+    fPadSystem::Inputs in[2] = { {0, 0}, {0, 0} };
+    int flags = 0;
+    if (!GGPO_SUCCEEDED(ggpo_synchronize_input(fSystem::ggpo, (void*)in, sizeof(fPadSystem::Inputs) * 2, &flags))) {
+        return false;
+    }
+    fPadSystem::playbackFrame = 0;
+    fPadSystem::playbackData[0][0] = in[0];
+    fPadSystem::playbackData[0][1] = in[1];
+    if (fSoundPlayerManager::bUsePureSounds) {
+        fSoundPlayerManager::SyncState();
+    }
+    (_this->*rSystem::publicMethods.BattleUpdate)();
+    fPadSystem::playbackFrame = -1;
+    ggpo_advance_frame(fSystem::ggpo);
+    return true;
+}
+
 void fSystem::BattleUpdate() {
     rSystem* _this = (rSystem*)this;
     rSystem::__publicMethods& sysMethods = rSystem::publicMethods;
@@ -361,6 +381,38 @@ void fSystem::BattleUpdate() {
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // Spectating: no local input, so the only failure is not having the
+        // host's next frame yet. A short gap is normal (it is the network);
+        // a long one means the host is gone, since a spectator session has
+        // no disconnect timeout of its own. And after a hiccup on our side
+        // the host's frames pile up, so simulate extra ones to close the gap.
+        if (localPlayerHandle == GGPO_INVALID_HANDLE && !syncTest.bActive) {
+            static ULONGLONG starvedSince = 0;
+            if (GGPO_SUCCEEDED(result)) {
+                starvedSince = 0;
+                GGPONetworkStats stats;
+                for (int extra = 0; extra < 3; extra++) {
+                    if (!GGPO_SUCCEEDED(ggpo_get_network_stats(ggpo, 0, &stats)) || stats.timesync.local_frames_behind <= 6) {
+                        break;
+                    }
+                    if (!AdvanceSpectatorFrame(_this)) {
+                        break;
+                    }
+                }
+            }
+            else {
+                ULONGLONG now = GetTickCount64();
+                if (starvedSince == 0) {
+                    starvedSince = now;
+                }
+                else if (now - starvedSince > 8000) {
+                    spdlog::error("GGPO: no input from the host for 8 s; leaving the match");
+                    *rSystem::GetReadyState(_this) = rSystem::RS_ISLEAVING;
+                    starvedSince = now;
                 }
             }
         }
@@ -656,7 +708,6 @@ void fSystem::StartGGPO(GGPOPlayer* inPlayers, int numPlayers, int port, int fra
             result = ggpo_add_player(ggpo, inPlayers + i, &players[i].handle);
             if (!GGPO_SUCCEEDED(result)) {
                 spdlog::error("GGPO session could not add spectator: {}", (int)result);
-                MessageBoxA(NULL, "GGPO could not add spectator", NULL, MB_OK);
                 continue;
             }
         }
@@ -671,6 +722,11 @@ void fSystem::StartGGPO(GGPOPlayer* inPlayers, int numPlayers, int port, int fra
 
 void fSystem::StartSpectating(unsigned short localport, int num_players, char* host_ip, unsigned short host_port, DWORD rngSeed) {
     localPlayerHandle = GGPO_INVALID_HANDLE;
+    for (int i = 0; i < MAX_SF4E_PROTOCOL_USERS; i++) {
+        players[i].type = GGPO_PLAYERTYPE_SPECTATOR;
+        players[i].handle = GGPO_INVALID_HANDLE;
+    }
+    spdlog::info("GGPO: spectating {}:{} from local port {}", host_ip, host_port, localport);
     GGPOSessionCallbacks cb = { 0 };
     cb.begin_game = ggpo_begin_game_callback;
     cb.advance_frame = ggpo_advance_frame_callback;
@@ -820,6 +876,10 @@ bool fSystem::ggpo_on_event_callback(GGPOEvent* info) {
         spdlog::info("GGPO: GGPO_EVENTCODE_CONNECTION_RESUMED");
         break;
     case GGPO_EVENTCODE_DISCONNECTED_FROM_PEER:
+        if (info->u.disconnected.player >= 1000) {
+            spdlog::warn("GGPO: spectator {} dropped; the match goes on", info->u.disconnected.player - 1000);
+            break;
+        }
         spdlog::error("GGPO: disconnected from peer (no packets for the timeout); leaving the match");
         *rSystem::GetReadyState(system) = rSystem::RS_ISLEAVING;
         break;

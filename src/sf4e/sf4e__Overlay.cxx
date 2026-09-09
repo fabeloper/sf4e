@@ -233,6 +233,9 @@ static void EnsureMatchmaker() {
 		return;
 	}
 	g_matchmakerInitialized = true;
+	if (g_playerName[0] == 0 && sf4e::args.szName[0] != 0) {
+		strncpy_s(g_playerName, sizeof(g_playerName), sf4e::args.szName, _TRUNCATE);
+	}
 	if (g_playerName[0] == 0) {
 		DWORD len = sizeof(g_playerName);
 		if (!GetUserNameA(g_playerName, &len)) {

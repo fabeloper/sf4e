@@ -37,7 +37,8 @@ namespace sf4e {
 			const Callbacks& callbacks,
 			std::string sidecarHash,
 			uint16_t ggpoPort,
-			std::string& name
+			std::string& name,
+			bool spectator = false
 		);
 		~SessionClient();
 
@@ -49,6 +50,7 @@ namespace sf4e {
 
 		// Lobby data
 		std::string _name;
+		bool _spectator = false;
 		SessionProtocol::LobbyData _lobbyData;
 		SessionProtocol::MatchData _matchData;
 		int64_t _outstandingReadyRequestNumber = -1;

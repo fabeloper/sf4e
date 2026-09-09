@@ -11,6 +11,7 @@
 #include "../Dimps/Dimps__Math.hxx"
 
 #define MAX_SF4E_PROTOCOL_USERS 4
+#define MAX_SF4E_SPECTATORS 2
 
 namespace sf4e {
 	namespace SessionProtocol {
@@ -59,6 +60,16 @@ namespace sf4e {
 			std::string ip;
 			uint16_t port;
 			uint64_t flags;
+
+			// Spectators watch the match through P1. `port` is where P1 sends
+			// them the confirmed inputs; `hostPort` is where the spectator sends
+			// its own traffic (a relay pipe has one port per direction; 0 means
+			// P1's own address). `watching` is set by the server for the
+			// spectators that were present when the current match was called,
+			// so P1 only waits for those.
+			bool spectator = false;
+			bool watching = false;
+			uint16_t hostPort = 0;
 		};
 
 		struct LobbyData {
@@ -169,6 +180,7 @@ namespace sf4e {
 			std::string sidecarHash;
 			std::string username;
 			uint16_t port;
+			bool spectator = false;
 		};
 
 		struct LobbyReady {
@@ -247,7 +259,7 @@ namespace sf4e {
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ConnectionID, host, user);
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LobbyID, host, key);
 
-		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MemberData, connId, name, ip, port);
+		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MemberData, connId, name, ip, port, spectator, watching, hostPort);
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LobbyData, id, editionSelect, roundCount, roundTime, members);
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MatchData, readyMessageNum, chara, stageID, rngSeed);
 
@@ -255,7 +267,7 @@ namespace sf4e {
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SessionHelloResp, type, cid);
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SessionDataUpdate, type, lobbyData, matchData);
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SessionJoinReject, type, result);
-		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SessionJoinRequest, type, sidecarHash, username, port);
+		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SessionJoinRequest, type, sidecarHash, username, port, spectator);
 
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LobbyReady, type);
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LobbyAllReady, type);

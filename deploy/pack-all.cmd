@@ -19,6 +19,7 @@ copy /y LobbyServer.exe %SRV%\ >nul
 copy /y *.dll %SRV%\ >nul
 copy /y ..\..\deploy\run-server.cmd %SRV%\ >nul
 copy /y ..\..\deploy\setup-laptop.cmd %SRV%\ >nul
+copy /y ..\..\deploy\update-server.cmd %SRV%\ >nul
 copy /y ..\..\deploy\upnp-map.cmd %SRV%\ >nul
 copy /y ..\..\deploy\upnp-map.ps1 %SRV%\ >nul
 copy /y ..\..\deploy\test-server.cmd %SRV%\ >nul

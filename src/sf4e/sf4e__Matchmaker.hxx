@@ -36,7 +36,7 @@ namespace sf4e {
 		bool IsConfigured() const;
 
 		void Create(const std::string& sidecarHash, const std::string& name);
-		void Join(const std::string& lobbyCode, const std::string& sidecarHash, const std::string& name);
+		void Join(const std::string& lobbyCode, const std::string& sidecarHash, const std::string& name, bool spectate = false);
 		// Asks the server whether it is there. Done with `code` empty on
 		// success; `lobbiesInUse` and `capacity` are filled in.
 		void Ping();

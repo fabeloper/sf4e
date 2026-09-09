@@ -12,7 +12,7 @@ runs it.
   through it.
 * Its public IP address.
 * In the provider's firewall (often called a security group), allow inbound
-  **UDP 23400-23420** and **UDP 24001-24020**.
+  **UDP 23400-23420**, **UDP 24001-24020** and **UDP 25001-25080**.
 
 ## Installing
 
@@ -26,7 +26,7 @@ restarts it after five seconds.
 You should see a line like:
 
 ```
-sf4e lobby server up: matchmaker udp/23400, sessions udp/23401-23420, relays udp/24001-24020, 20 lobbies
+sf4e lobby server up: matchmaker udp/23400, sessions udp/23401-23420, relays udp/24001-24020, spectator pipes udp/25001-25080, 20 lobbies
 ```
 
 To keep it running after you disconnect from Remote Desktop, sign out instead
@@ -60,8 +60,9 @@ VPS, with one difference: your router has to send the server's ports to it.
    router's app or web page, find *Address Reservation* (or *DHCP
    reservation*) and reserve the address it printed.
 4. Send the ports to it. Either run `upnp-map.cmd` on the laptop, which asks
-   the router to do it automatically, or forward **UDP 23400-23420** and
-   **UDP 24001-24020** to the laptop's address by hand in the router. If you
+   the router to do it automatically, or forward **UDP 23400-23420**,
+   **UDP 24001-24020** and **UDP 25001-25080** to the laptop's address by
+   hand in the router. If you
    have two routers in a row (a provider box and your own), the provider's
    box must forward the ports, or DMZ, to your router, and your router to
    the laptop.
@@ -75,11 +76,19 @@ Players keep using your public IP in `server.txt`. It changes when your
 provider decides; a free dynamic-DNS name, set up in the router, gives them
 an address that never changes.
 
+## Updating a running server
+
+Extract the new `sf4e-server.zip` over the folder the server runs from,
+replacing the files, then run `update-server.cmd`. It refreshes the firewall
+rule for any new ports and restarts the server. Players must update too:
+lobbies only accept the build they were created with.
+
 ## Capacity and limits
 
 * 20 lobbies at once. Change `NUM_LOBBIES` in `src/server/lobby_server.cxx` to
   raise it; the port ranges grow with it.
-* Two players per lobby. Spectators are not relayed yet.
+* Two players and up to two spectators per lobby. Each spectator gets a
+  relay pipe of its own (two ports), fed by player 1's game.
 * Empty lobbies are released after 90 seconds.
 * Both players must run the same sf4e build, checked automatically.
 

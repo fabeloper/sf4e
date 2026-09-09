@@ -12,6 +12,10 @@ namespace sf4e {
 		// Lobby server as "host" or "host:port". Copied by value into the
 		// game process with the rest of the payload, hence a fixed buffer.
 		char szServer[96] = { 0 };
+		// Display name for the lobby: the Steam persona of the account that
+		// signed in last, read by the launcher. Empty falls back to the
+		// Windows user name.
+		char szName[64] = { 0 };
 	} Args;
 
 	typedef struct Payload {

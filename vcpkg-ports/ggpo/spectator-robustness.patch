@@ -1,0 +1,135 @@
+diff -ruN a/src/lib/ggpo/backends/p2p.cpp b/src/lib/ggpo/backends/p2p.cpp
+--- a/src/lib/ggpo/backends/p2p.cpp	2026-09-09 16:04:49.119533700 +0200
++++ b/src/lib/ggpo/backends/p2p.cpp	2026-09-09 16:27:18.048577300 +0200
+@@ -94,6 +94,7 @@
+    _spectators[queue].SetDisconnectTimeout(_disconnect_timeout);
+    _spectators[queue].SetDisconnectNotifyStart(_disconnect_notify_start);
+    _spectators[queue].Synchronize();
++   _spectator_sync_deadline[queue] = Platform::GetCurrentTimeMS() + 20000;
+ 
+    return GGPO_OK;
+ }
+@@ -106,6 +107,9 @@
+ 
+       PollUdpProtocolEvents();
+ 
++      if (_synchronizing) {
++         CheckInitialSync();
++      }
+       if (!_synchronizing) {
+          _sync.CheckSimulation(timeout);
+ 
+@@ -614,8 +618,13 @@
+          }
+       }
+       for (i = 0; i < _num_spectators; i++) {
+-         if (_spectators[i].IsInitialized() && !_spectators[i].IsSynchronized()) {
+-            return;
++         if (_spectators[i].IsInitialized() && !_spectators[i].IsSynchronized() && !_spectators[i].IsDisconnected()) {
++            if (Platform::GetCurrentTimeMS() < _spectator_sync_deadline[i]) {
++               return;
++            }
++            // A spectator that never showed up must not hold the players.
++            Log("spectator %d did not synchronize in time; starting without it.\n", i);
++            _spectators[i].Disconnect();
+          }
+       }
+ 
+diff -ruN a/src/lib/ggpo/backends/p2p.h b/src/lib/ggpo/backends/p2p.h
+--- a/src/lib/ggpo/backends/p2p.h	2026-09-09 16:04:49.104437600 +0200
++++ b/src/lib/ggpo/backends/p2p.h	2026-09-09 16:04:49.281032600 +0200
+@@ -61,6 +61,7 @@
+    UdpProtocol           *_endpoints;
+    UdpProtocol           _spectators[GGPO_MAX_SPECTATORS];
+    int                   _num_spectators;
++   unsigned int          _spectator_sync_deadline[GGPO_MAX_SPECTATORS];
+    int                   _input_size;
+ 
+    bool                  _synchronizing;
+diff -ruN a/src/lib/ggpo/backends/spectator.cpp b/src/lib/ggpo/backends/spectator.cpp
+--- a/src/lib/ggpo/backends/spectator.cpp	2026-09-09 16:04:49.089402600 +0200
++++ b/src/lib/ggpo/backends/spectator.cpp	2026-09-09 16:04:49.219845900 +0200
+@@ -16,7 +16,8 @@
+                                    u_short hostport) :
+    _num_players(num_players),
+    _input_size(input_size),
+-   _next_input_to_send(0)
++   _next_input_to_send(0),
++   _last_received_frame(-1)
+ {
+    _callbacks = *cb;
+    _synchronizing = true;
+@@ -160,6 +161,9 @@
+       _host.SetLocalFrameNumber(input.frame);
+       _host.SendInputAck();
+       _inputs[input.frame % SPECTATOR_FRAME_BUFFER_SIZE] = input;
++      if (input.frame > _last_received_frame) {
++         _last_received_frame = input.frame;
++      }
+       break;
+    }
+ }
+diff -ruN a/src/lib/ggpo/backends/spectator.h b/src/lib/ggpo/backends/spectator.h
+--- a/src/lib/ggpo/backends/spectator.h	2026-09-09 16:04:49.075397700 +0200
++++ b/src/lib/ggpo/backends/spectator.h	2026-09-09 16:04:49.197202600 +0200
+@@ -15,7 +15,7 @@
+ #include "timesync.h"
+ #include "network/udp_proto.h"
+ 
+-#define SPECTATOR_FRAME_BUFFER_SIZE    64
++#define SPECTATOR_FRAME_BUFFER_SIZE    1024
+ 
+ class SpectatorBackend : public IQuarkBackend, IPollSink, Udp::Callbacks {
+ public:
+@@ -30,7 +30,13 @@
+    virtual GGPOErrorCode SyncInput(void *values, int size, int *disconnect_flags);
+    virtual GGPOErrorCode IncrementFrame(void);
+    virtual GGPOErrorCode DisconnectPlayer(GGPOPlayerHandle handle) { return GGPO_ERRORCODE_UNSUPPORTED; }
+-   virtual GGPOErrorCode GetNetworkStats(GGPONetworkStats *stats, GGPOPlayerHandle handle) { return GGPO_ERRORCODE_UNSUPPORTED; }
++   virtual GGPOErrorCode GetNetworkStats(GGPONetworkStats *stats, GGPOPlayerHandle handle) {
++      memset(stats, 0, sizeof(*stats));
++      _host.GetNetworkStats(stats);
++      // How many frames of host input are waiting to be simulated.
++      stats->timesync.local_frames_behind = _last_received_frame - _next_input_to_send + 1;
++      return GGPO_OK;
++   }
+    virtual GGPOErrorCode SetFrameDelay(GGPOPlayerHandle player, int delay) { return GGPO_ERRORCODE_UNSUPPORTED; }
+    virtual GGPOErrorCode SetDisconnectTimeout(int timeout) { return GGPO_ERRORCODE_UNSUPPORTED; }
+    virtual GGPOErrorCode SetDisconnectNotifyStart(int timeout) { return GGPO_ERRORCODE_UNSUPPORTED; }
+@@ -53,6 +59,7 @@
+    int                   _input_size;
+    int                   _num_players;
+    int                   _next_input_to_send;
++   int                   _last_received_frame;
+    GameInput             _inputs[SPECTATOR_FRAME_BUFFER_SIZE];
+ };
+ 
+diff -ruN a/src/lib/ggpo/network/udp_proto.cpp b/src/lib/ggpo/network/udp_proto.cpp
+--- a/src/lib/ggpo/network/udp_proto.cpp	2026-09-09 16:04:49.148087800 +0200
++++ b/src/lib/ggpo/network/udp_proto.cpp	2026-09-09 16:27:18.048577300 +0200
+@@ -101,6 +101,14 @@
+           * (better, but still ug).  For the meantime, make this queue really big to decrease
+           * the odds of this happening...
+           */
++         if (_pending_output.size() >= 56) {
++            // A spectator that stopped acking. Dropping it beats the assert
++            // that would take the whole game down.
++            Log("pending output full for queue %d; disconnecting it.\n", _queue);
++            Disconnect();
++            QueueEvent(Event(Event::Disconnected));
++            return;
++         }
+          _pending_output.push(input);
+       }
+       SendPendingOutput();
+diff -ruN a/src/lib/ggpo/network/udp_proto.h b/src/lib/ggpo/network/udp_proto.h
+--- a/src/lib/ggpo/network/udp_proto.h	2026-09-09 16:04:49.133580000 +0200
++++ b/src/lib/ggpo/network/udp_proto.h	2026-09-09 16:04:49.239885900 +0200
+@@ -70,6 +70,7 @@
+    bool IsInitialized() { return _udp != NULL; }
+    bool IsSynchronized() { return _current_state == Running; }
+    bool IsRunning() { return _current_state == Running; }
++   bool IsDisconnected() { return _current_state == Disconnected; }
+    void SendInput(GameInput &input);
+    void SendInputAck();
+    bool HandlesMsg(sockaddr_in &from, UdpMsg *msg);

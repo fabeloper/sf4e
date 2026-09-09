@@ -40,6 +40,17 @@ keyboard: arrows, Enter, Escape, and you can type a code directly.
 **Input delay** is on the home screen. Start at 2. Raise it if the match
 stutters.
 
+## Watching a match
+
+A lobby also has two spectator seats. On the **Join with code** screen, type
+the code and pick **WATCH** instead of **JOIN**. You see the two players and
+who else is watching; when they both press READY the match starts on your
+screen too, seen from player 1's side and a moment behind them. After the
+match, choose **KEEP WATCHING** for the next one or leave.
+
+Join before the players ready up: the match is streamed from its first frame,
+so anyone who joins while it is running watches the next one instead.
+
 ## If something goes wrong
 
 * **"SERVER UNREACHABLE"** on the home screen: the lobby server is down, or a

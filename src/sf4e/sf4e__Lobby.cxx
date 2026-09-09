@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -93,7 +94,7 @@ namespace {
 	const char CODE_CHARS[] = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 	const int CODE_CHAR_COUNT = 31;
 	const int JOIN_COLS = 8;
-	const int JOIN_EXTRA = 2;  // DEL, JOIN
+	const int JOIN_EXTRA = 3;  // DEL, JOIN, WATCH
 
 	// Lobby screen: a character grid, then an options row, then actions.
 	const int CHARA_COUNT = 0x2c;
@@ -107,6 +108,7 @@ namespace {
 	bool g_sentReady = false;
 	bool g_reportedLastMatch = false;
 	bool g_isCreator = false;
+	bool g_spectate = false;   // joined to watch, not to play
 
 	// Ink strokes, generated once per open so they don't flicker.
 	struct Stroke { std::vector<ImVec2> pts; float thickness; ImU32 col; };
@@ -336,6 +338,7 @@ namespace {
 	void EnsureMatchmaker() {
 		if (g_mmConfigured) return;
 		g_mmConfigured = true;
+		if (g_name[0] == 0 && sf4e::args.szName[0] != 0) strncpy_s(g_name, sf4e::args.szName, _TRUNCATE);
 		if (g_name[0] == 0) {
 			DWORD len = sizeof(g_name);
 			if (!GetUserNameA(g_name, &len)) strcpy_s(g_name, "Player");
@@ -343,13 +346,56 @@ namespace {
 		if (sf4e::args.szServer[0] != 0) g_mm.Configure(sf4e::args.szServer);
 	}
 
+	// The server keeps the players in front of the spectators.
 	int MySide() {
-		if (!fUserApp::netplay) return -1;
+		if (!fUserApp::netplay || g_spectate) return -1;
 		sf4e::SessionClient& c = fUserApp::netplay->client;
-		for (size_t i = 0; i < c._lobbyData.members.size() && i < 2; i++) {
-			if (c._lobbyData.members[i].connId == c._cid) return (int)i;
+		int n = 0;
+		for (size_t i = 0; i < c._lobbyData.members.size(); i++) {
+			if (c._lobbyData.members[i].spectator) continue;
+			if (c._lobbyData.members[i].connId == c._cid) return n;
+			n++;
 		}
 		return -1;
+	}
+
+	const sf4e::SessionProtocol::MemberData* PlayerAt(int side) {
+		if (!fUserApp::netplay) return nullptr;
+		auto& m = fUserApp::netplay->client._lobbyData.members;
+		int n = 0;
+		for (size_t i = 0; i < m.size(); i++) {
+			if (m[i].spectator) continue;
+			if (n == side) return &m[i];
+			n++;
+		}
+		return nullptr;
+	}
+
+	const sf4e::SessionProtocol::MemberData* Me() {
+		if (!fUserApp::netplay) return nullptr;
+		sf4e::SessionClient& c = fUserApp::netplay->client;
+		for (size_t i = 0; i < c._lobbyData.members.size(); i++) {
+			if (c._lobbyData.members[i].connId == c._cid) return &c._lobbyData.members[i];
+		}
+		return nullptr;
+	}
+
+	std::string SpectatorNames() {
+		std::string s;
+		if (!fUserApp::netplay) return s;
+		auto& m = fUserApp::netplay->client._lobbyData.members;
+		for (size_t i = 0; i < m.size(); i++) {
+			if (!m[i].spectator) continue;
+			if (!s.empty()) s += ", ";
+			s += m[i].name;
+		}
+		return s;
+	}
+
+	void LeaveLobby() {
+		fUserApp::netplay.reset();
+		g_mm.Cancel();
+		g_screen = SC_HOME;
 	}
 
 	void SetSuppress(bool on) {
@@ -360,7 +406,7 @@ namespace {
 		std::string addr = g_mm.SessionAddress();
 		std::vector<char> buf(addr.begin(), addr.end());
 		buf.push_back(0);
-		fUserApp::StartSession(buf.data(), g_localGgpoPort, sf4e::sidecarHash, std::string(g_name), g_deviceType, g_deviceIdx, (uint8_t)g_delay);
+		fUserApp::StartSession(buf.data(), g_localGgpoPort, sf4e::sidecarHash, std::string(g_name), g_deviceType, g_deviceIdx, (uint8_t)g_delay, g_spectate);
 		g_sentReady = false;
 		g_reportedLastMatch = false;
 		g_lobbyRow = 0;
@@ -483,6 +529,7 @@ namespace {
 			case 0:
 				if (!g_mm.IsConfigured()) { Flash("No lobby server configured"); break; }
 				g_isCreator = true;
+				g_spectate = false;
 				g_mm.Create(sf4e::sidecarHash, g_name);
 				g_screen = SC_CONNECTING;
 				break;
@@ -510,44 +557,64 @@ namespace {
 			if (i < (int)g_code.size()) { char s[2] = { g_code[i], 0 }; TextCentered(dl, g_fontTitle, 64, (a.x + b.x) * 0.5f, y0 + 6, s, GOLD); }
 		}
 
-		// The grid: characters, then DEL and JOIN.
+		// The grid: characters, then a row of DEL, JOIN (play) and WATCH.
 		int total_items = CODE_CHAR_COUNT + JOIN_EXTRA;
 		float cell = 62, cg = 8;
-		float gx0 = ds.x * 0.5f - (JOIN_COLS * cell + (JOIN_COLS - 1) * cg) * 0.5f, gy0 = ds.y * 0.46f;
+		float gridW = JOIN_COLS * cell + (JOIN_COLS - 1) * cg;
+		float gx0 = ds.x * 0.5f - gridW * 0.5f, gy0 = ds.y * 0.46f;
+		int charRows = (CODE_CHAR_COUNT + JOIN_COLS - 1) / JOIN_COLS;
+		const char* extras[JOIN_EXTRA] = { "DEL", "JOIN", "WATCH" };
 		for (int i = 0; i < total_items; i++) {
-			int r = i / JOIN_COLS, c = i % JOIN_COLS;
-			ImVec2 a(gx0 + c * (cell + cg), gy0 + r * (cell + cg)), b(a.x + cell, a.y + cell);
 			bool sel = i == g_joinCursor;
-			bool extra = i >= CODE_CHAR_COUNT;
-			if (extra) { b.x = a.x + cell * 2 + cg; if (i == CODE_CHAR_COUNT + 1) { a.x += cell * 2 + cg * 2; b.x += cell * 2 + cg * 2; } }
+			ImVec2 a, b;
+			const char* label;
+			char s[2] = { 0, 0 };
+			if (i < CODE_CHAR_COUNT) {
+				int r = i / JOIN_COLS, c = i % JOIN_COLS;
+				a = ImVec2(gx0 + c * (cell + cg), gy0 + r * (cell + cg)); b = ImVec2(a.x + cell, a.y + cell);
+				s[0] = CODE_CHARS[i]; label = s;
+			}
+			else {
+				int k = i - CODE_CHAR_COUNT;
+				float w = (gridW - (JOIN_EXTRA - 1) * cg) / JOIN_EXTRA;
+				a = ImVec2(gx0 + k * (w + cg), gy0 + charRows * (cell + cg)); b = ImVec2(a.x + w, a.y + cell);
+				label = extras[k];
+			}
 			dl->AddRectFilled(a, b, sel ? RED : CARD); dl->AddRect(a, b, sel ? PAPER : CARD_EDGE, 0, 0, 2);
-			const char* label = extra ? (i == CODE_CHAR_COUNT ? "DEL" : "JOIN") : nullptr;
-			char s[2] = { extra ? 0 : CODE_CHARS[i], 0 };
-			TextCentered(dl, g_fontHead, 34, (a.x + b.x) * 0.5f, a.y + 10, extra ? label : s, PAPER, false);
+			TextCentered(dl, g_fontHead, 34, (a.x + b.x) * 0.5f, a.y + 10, label, PAPER, false);
 		}
-		DrawHint(dl, ds, "Move: pick a letter     A: add     B / Backspace: delete     Y / Ctrl+V: paste     Start: join");
+		DrawHint(dl, ds, "Move: pick a letter     A: add     B / Backspace: delete     Y / Ctrl+V: paste     Start: join     WATCH: spectate the match");
 
-		int rows = (total_items + JOIN_COLS - 1) / JOIN_COLS;
 		if (in.left) g_joinCursor = (g_joinCursor + total_items - 1) % total_items;
 		if (in.right) g_joinCursor = (g_joinCursor + 1) % total_items;
-		if (in.up) g_joinCursor = (g_joinCursor - JOIN_COLS + total_items) % total_items;
-		if (in.down) g_joinCursor = (g_joinCursor + JOIN_COLS) % total_items;
-		bool submit = in.start;
+		if (in.up) {
+			if (g_joinCursor >= CODE_CHAR_COUNT) {
+				int k = g_joinCursor - CODE_CHAR_COUNT;
+				g_joinCursor = (std::min)(CODE_CHAR_COUNT - 1, (charRows - 1) * JOIN_COLS + k * 3);
+			}
+			else if (g_joinCursor >= JOIN_COLS) g_joinCursor -= JOIN_COLS;
+		}
+		if (in.down && g_joinCursor < CODE_CHAR_COUNT) {
+			if (g_joinCursor + JOIN_COLS < CODE_CHAR_COUNT) g_joinCursor += JOIN_COLS;
+			else g_joinCursor = CODE_CHAR_COUNT + (std::min)(JOIN_EXTRA - 1, (g_joinCursor % JOIN_COLS) / 3);
+		}
+		bool submit = in.start, watch = false;
 		if (in.confirm) {
 			if (g_joinCursor < CODE_CHAR_COUNT) { if (g_code.size() < 6) g_code += CODE_CHARS[g_joinCursor]; }
 			else if (g_joinCursor == CODE_CHAR_COUNT) { if (!g_code.empty()) g_code.pop_back(); }
-			else submit = true;
+			else if (g_joinCursor == CODE_CHAR_COUNT + 1) submit = true;
+			else watch = true;
 		}
 		if (in.back) { if (!g_code.empty()) g_code.pop_back(); else g_screen = SC_HOME; }
 		if (in.alt || in.paste) PasteCode();
-		if (submit) {
+		if (submit || watch) {
 			if (g_code.size() < 6) { Flash("The code has six characters"); }
-			else { g_mm.Join(g_code, sf4e::sidecarHash, g_name); g_screen = SC_CONNECTING; }
+			else { g_spectate = watch; g_mm.Join(g_code, sf4e::sidecarHash, g_name, watch); g_screen = SC_CONNECTING; }
 		}
 	}
 
 	void DrawConnecting(ImDrawList* dl, ImVec2 ds, const Input& in) {
-		DrawHeader(dl, ds, g_isCreator ? "CREATING LOBBY" : "JOINING", nullptr);
+		DrawHeader(dl, ds, g_isCreator ? "CREATING LOBBY" : (g_spectate ? "JOINING AS SPECTATOR" : "JOINING"), nullptr);
 		g_mm.Poll();
 		if (g_mm.state == sf4e::Matchmaker::State::Waiting) {
 			int dots = (int)(GetTickCount64() / 400 % 4);
@@ -572,35 +639,53 @@ namespace {
 		bool won = !draw && g_resultWinner == g_mySideAtResult;
 		DrawHeader(dl, ds, "MATCH OVER", nullptr);
 
-		const char* verdict = draw ? "DRAW" : (won ? "YOU WIN" : "YOU LOSE");
-		TextCentered(dl, g_fontTitle, 120, ds.x * 0.5f, ds.y * 0.24f, verdict, draw ? PAPER : (won ? GOLD : RED));
+		char who[64];
+		const char* verdict;
+		if (g_spectate) {
+			snprintf(who, sizeof(who), "%s WINS", g_resultWinner == 0 ? "P1" : "P2");
+			verdict = draw ? "DRAW" : who;
+		}
+		else {
+			verdict = draw ? "DRAW" : (won ? "YOU WIN" : "YOU LOSE");
+		}
+		TextCentered(dl, g_fontTitle, 120, ds.x * 0.5f, ds.y * 0.24f, verdict, draw ? PAPER : ((won || g_spectate) ? GOLD : RED));
 
 		const char* c1 = (g_resultChara[0] >= 0 && g_resultChara[0] < CHARA_COUNT) ? Dimps::characterNames[g_resultChara[0]] : "?";
 		const char* c2 = (g_resultChara[1] >= 0 && g_resultChara[1] < CHARA_COUNT) ? Dimps::characterNames[g_resultChara[1]] : "?";
 		char line[96];
 		snprintf(line, sizeof(line), "%s   vs   %s", c1, c2);
 		TextCentered(dl, g_fontHead, 34, ds.x * 0.5f, ds.y * 0.24f + 130, line, PAPER_DIM, false);
-		char tally[64];
-		snprintf(tally, sizeof(tally), "this session   %d - %d", g_wins, g_losses);
-		TextCentered(dl, g_fontBody, 22, ds.x * 0.5f, ds.y * 0.24f + 176, tally, PAPER_DIM, false);
+		if (!g_spectate) {
+			char tally[64];
+			snprintf(tally, sizeof(tally), "this session   %d - %d", g_wins, g_losses);
+			TextCentered(dl, g_fontBody, 22, ds.x * 0.5f, ds.y * 0.24f + 176, tally, PAPER_DIM, false);
+		}
 
-		const char* items[3] = { "REMATCH", "CHANGE CHARACTER", "LEAVE LOBBY" };
+		const char* playerItems[3] = { "REMATCH", "CHANGE CHARACTER", "LEAVE LOBBY" };
+		const char* watcherItems[2] = { "KEEP WATCHING", "LEAVE LOBBY" };
+		int n = g_spectate ? 2 : 3;
+		const char** items = g_spectate ? watcherItems : playerItems;
 		float y = ds.y * 0.56f;
-		for (int i = 0; i < 3; i++) {
+		for (int i = 0; i < n; i++) {
 			bool sel = i == g_resultCursor;
 			ImVec2 sz = TextSize(g_fontHead, 40, items[i]);
 			float x = ds.x * 0.5f - sz.x * 0.5f;
-			if (sel) Slant(dl, ImVec2(x - 40, y - 6), ImVec2(x + sz.x + 40, y + 52), i == 2 ? RED : (i == 0 ? GREEN : RED));
+			if (sel) Slant(dl, ImVec2(x - 40, y - 6), ImVec2(x + sz.x + 40, y + 52), i == 0 ? GREEN : RED);
 			TextOutlined(dl, g_fontHead, 40, ImVec2(x, y), items[i], sel ? PAPER : PAPER_DIM);
 			y += 72;
 		}
-		DrawHint(dl, ds, "Up/Down: choose     A: confirm     Start: rematch with the same character");
+		DrawHint(dl, ds, g_spectate ? "Up/Down: choose     A: confirm" : "Up/Down: choose     A: confirm     Start: rematch with the same character");
 
 		if (!fUserApp::netplay) {
-			TextCentered(dl, g_fontBody, 22, ds.x * 0.5f, ds.y * 0.50f, "Your opponent left", RED, false);
+			TextCentered(dl, g_fontBody, 22, ds.x * 0.5f, ds.y * 0.50f, g_spectate ? "The lobby closed" : "Your opponent left", RED, false);
 		}
-		if (in.up) g_resultCursor = (g_resultCursor + 2) % 3;
-		if (in.down) g_resultCursor = (g_resultCursor + 1) % 3;
+		if (in.up) g_resultCursor = (g_resultCursor + n - 1) % n;
+		if (in.down) g_resultCursor = (g_resultCursor + 1) % n;
+		if (g_spectate) {
+			if (in.start || (in.confirm && g_resultCursor == 0)) { g_screen = fUserApp::netplay ? SC_LOBBY : SC_HOME; }
+			else if ((in.confirm && g_resultCursor == 1) || in.back) LeaveLobby();
+			return;
+		}
 		bool rematch = in.start || (in.confirm && g_resultCursor == 0);
 		if (rematch) {
 			if (fUserApp::netplay) { SendReady(); g_screen = SC_LOBBY; g_lobbyRow = 2; g_actionCursor = 0; }
@@ -611,7 +696,7 @@ namespace {
 			g_lobbyRow = 0;
 		}
 		else if ((in.confirm && g_resultCursor == 2) || in.back) {
-			fUserApp::netplay.reset(); g_mm.Cancel(); g_screen = SC_HOME;
+			LeaveLobby();
 		}
 	}
 
@@ -625,6 +710,54 @@ namespace {
 		if (ready) { Slant(dl, ImVec2(b.x - 130, b.y - 40), ImVec2(b.x - 8, b.y - 8), GREEN); dl->AddText(g_fontHead, 24, ImVec2(b.x - 112, b.y - 36), INK, "READY"); }
 	}
 
+	// The spectator's room: the two players, who is watching, and when the
+	// next match starts. Nothing to pick; the players run the show.
+	void DrawSpectatorLobby(ImDrawList* dl, ImVec2 ds, const Input& in) {
+		sf4e::SessionClient& c = fUserApp::netplay->client;
+		bool connected = !c._lobbyData.members.empty();
+		std::string code = g_mm.code;
+
+		DrawHeader(dl, ds, "SPECTATING", nullptr);
+		TextOutlined(dl, g_fontTitle, 96, ImVec2(ds.x - 60 - TextSize(g_fontTitle, 96, code.c_str()).x, 30), code.c_str(), GOLD, 3.0f);
+		dl->AddText(g_fontSmall, 20, ImVec2(ds.x - 60 - 300, 130), PAPER_DIM, "you are watching this lobby   (Y / Ctrl+C: copy)");
+		if ((in.alt || in.copy) && !code.empty()) {
+			ImGui::SetClipboardText(code.c_str());
+			Flash("Code copied to the clipboard", true);
+		}
+
+		float cardW = (ds.x - 120 - 40) * 0.5f, cardH = 110, cy = 170;
+		for (int i = 0; i < 2; i++) {
+			const sf4e::SessionProtocol::MemberData* pm = PlayerAt(i);
+			bool ready = pm && c._matchData.readyMessageNum[i] > -1;
+			int charaId = ready ? c._matchData.chara[i].charaID : -1;
+			ImVec2 a(60 + i * (cardW + 40), cy);
+			DrawPlayerCard(dl, a, ImVec2(a.x + cardW, cy + cardH), i == 0 ? "P1" : "P2", pm ? pm->name.c_str() : "waiting for a player...", charaId, ready, false);
+		}
+		TextCentered(dl, g_fontTitle, 48, ds.x * 0.5f, cy + 24, "VS", RED);
+
+		const sf4e::SessionProtocol::MemberData* me = Me();
+		bool bothReady = c._matchData.readyMessageNum[0] > -1 && c._matchData.readyMessageNum[1] > -1;
+		const char* status;
+		if (!connected) status = "Connecting to the lobby...";
+		else if (!PlayerAt(0) || !PlayerAt(1)) status = "Waiting for two players";
+		else if (bothReady && me && me->watching) status = "The match is starting";
+		else if (bothReady) status = "A match is in progress. You will watch the next one.";
+		else status = "Waiting for the players to ready up";
+		TextCentered(dl, g_fontHead, 36, ds.x * 0.5f, cy + cardH + 70, status, PAPER);
+		std::string specs = SpectatorNames();
+		TextCentered(dl, g_fontBody, 22, ds.x * 0.5f, cy + cardH + 130, ("Watching: " + specs).c_str(), PAPER_DIM, false);
+		TextCentered(dl, g_fontSmall, 20, ds.x * 0.5f, cy + cardH + 170, "You see the match from P1's side, a moment behind the players.", PAPER_DIM, false);
+
+		float ay = ds.y * 0.72f;
+		const char* act = "LEAVE LOBBY";
+		ImVec2 sz = TextSize(g_fontHead, 30, act);
+		ImVec2 a(60, ay), b(60 + sz.x + 60, ay + 50);
+		Slant(dl, a, b, RED, 10);
+		TextOutlined(dl, g_fontHead, 30, ImVec2(a.x + 30, a.y + 8), act, PAPER);
+		DrawHint(dl, ds, "A / B: leave the lobby     Y / Ctrl+C: copy the code");
+		if (in.back || in.confirm) LeaveLobby();
+	}
+
 	void DrawLobby(ImDrawList* dl, ImVec2 ds, const Input& in) {
 		if (!fUserApp::netplay) {
 			DrawHeader(dl, ds, "LOBBY", nullptr);
@@ -633,6 +766,7 @@ namespace {
 			if (in.back || in.confirm) g_screen = SC_HOME;
 			return;
 		}
+		if (g_spectate) { DrawSpectatorLobby(dl, ds, in); return; }
 		sf4e::SessionClient& c = fUserApp::netplay->client;
 		int side = MySide();
 		bool connected = !c._lobbyData.members.empty();
@@ -650,8 +784,9 @@ namespace {
 		// Player cards.
 		float cardW = (ds.x - 120 - 40) * 0.5f, cardH = 110, cy = 170;
 		for (int i = 0; i < 2; i++) {
-			bool has = (int)c._lobbyData.members.size() > i;
-			const char* name = has ? c._lobbyData.members[i].name.c_str() : "waiting for opponent...";
+			const sf4e::SessionProtocol::MemberData* pm = PlayerAt(i);
+			bool has = pm != nullptr;
+			const char* name = has ? pm->name.c_str() : "waiting for opponent...";
 			bool ready = has && c._matchData.readyMessageNum[i] > -1;
 			int charaId = -1;
 			if (has && i == side) charaId = g_cond.charaID;
@@ -660,6 +795,8 @@ namespace {
 			DrawPlayerCard(dl, a, ImVec2(a.x + cardW, cy + cardH), i == 0 ? "P1" : "P2", name, charaId, ready, has && i == side);
 		}
 		TextCentered(dl, g_fontTitle, 48, ds.x * 0.5f, cy + 24, "VS", RED);
+		std::string specs = SpectatorNames();
+		if (!specs.empty()) dl->AddText(g_fontSmall, 20, ImVec2(60, cy + cardH + 4), PAPER_DIM, ("Watching: " + specs).c_str());
 
 		// Character grid.
 		float gy = cy + cardH + 26;
@@ -837,7 +974,7 @@ void sf4e::Lobby::OnMatchResult(int winnerSide, int charaP1, int charaP2) {
 	if (c._matchData.readyMessageNum[0] > -1) g_resultChara[0] = c._matchData.chara[0].charaID;
 	if (c._matchData.readyMessageNum[1] > -1) g_resultChara[1] = c._matchData.chara[1].charaID;
 	g_mySideAtResult = MySide();
-	if (winnerSide >= 0) {
+	if (winnerSide >= 0 && !g_spectate) {
 		if (winnerSide == g_mySideAtResult) g_wins++; else g_losses++;
 	}
 	spdlog::info("Lobby: match over, winner side {} (me: side {})", winnerSide, g_mySideAtResult);
@@ -856,7 +993,7 @@ void sf4e::Lobby::Draw() {
 	// Hide during a match, and come back for the rematch.
 	bool menu = OnMainMenu();
 	if (!menu) {
-		if (!g_hiddenForBattle) { g_hiddenForBattle = true; SetSuppress(false); }
+		if (!g_hiddenForBattle) { g_hiddenForBattle = true; SetSuppress(g_spectate); }
 		return;
 	}
 	if (g_hiddenForBattle) {

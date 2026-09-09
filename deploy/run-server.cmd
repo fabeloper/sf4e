@@ -6,6 +6,7 @@ REM Ports (all UDP):
 REM   23400        matchmaker (create / join by code)
 REM   23401-23420  one session per lobby
 REM   24001-24020  one GGPO relay per lobby
+REM   25001-25080  two spectator pipes per lobby (two ports each)
 REM
 REM Your VPS provider's own firewall (security group) must allow the same
 REM UDP ranges. That is separate from Windows Firewall.
@@ -15,7 +16,7 @@ cd /d "%~dp0"
 netsh advfirewall firewall show rule name="sf4e lobby" >nul 2>&1
 if errorlevel 1 (
   echo Opening Windows Firewall for sf4e...
-  netsh advfirewall firewall add rule name="sf4e lobby" dir=in action=allow protocol=UDP localport=23400-23420,24001-24020
+  netsh advfirewall firewall add rule name="sf4e lobby" dir=in action=allow protocol=UDP localport=23400-23420,24001-24020,25001-25080
 )
 
 :run

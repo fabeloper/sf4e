@@ -305,6 +305,7 @@
           <li><span class="num">23400</span> matchmaker</li>
           <li><span class="num">23401-23420</span> one session per lobby</li>
           <li><span class="num">24001-24020</span> one relay per lobby</li>
+          <li><span class="num">25001-25080</span> two spectator pipes per lobby</li>
         </ul>
       </div>
     </div>
@@ -313,7 +314,7 @@
     <div class="steps">
       <div class="step"><div class="n">1</div><div><h3>More players, more logs</h3><p>Every match logs ping and frames-behind on both sides and counts gameplay divergences. The next questions, whether the relay is fast enough across countries and whether the actor gap ever changes a match, are answered by volume.</p></div></div>
       <div class="step"><div class="n">2</div><div><h3>A permanent address, then a rented server</h3><p>A dynamic-DNS name so the built-in address never goes stale, then a VPS so nobody's laptop has to be on. After that, try a direct peer connection first and keep the relay as the fallback.</p></div></div>
-      <div class="step"><div class="n">3</div><div><h3>Portraits and polish</h3><p>Character portraits and stage previews in the lobby, a ping readout before you ready up, and a spectator seat.</p></div></div>
+      <div class="step"><div class="n">3</div><div><h3>Portraits and polish</h3><p>Character portraits and stage previews in the lobby, and a ping readout before you ready up. Spectating shipped in 0.2.0: two seats per lobby, each fed by player 1's game through a relay pipe of its own, with the rule that a spectator can never stall or drop the players.</p></div></div>
       <div class="step"><div class="n">4</div><div><h3>Close the actor save-state gap</h3><p>Read the character actor's save and restore routines in the disassembly to find which fields one writes and the other does not. The diagnostics are in place to confirm the fix in minutes.</p></div></div>
     </div>
 

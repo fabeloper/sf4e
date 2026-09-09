@@ -40,6 +40,12 @@ namespace sf4e {
 		// so neither player needs a reachable address of their own.
 		uint16_t _relayPort;
 
+		// Spectator relay pipes: slot k uses ports _spectatorRelayBase + 2k
+		// (P1 sends there) and + 2k + 1 (the spectator sends there). 0 means
+		// no relay, and spectators reach P1 directly.
+		uint16_t _spectatorRelayBase;
+		int _spectatorSlots;
+
 		// Connection callbacks and message utilities.
 		//
 		// GameNetworkingSockets delivers connection status changes through
@@ -62,7 +68,8 @@ namespace sf4e {
 			const std::string& sidecarHash,
 			const std::string& name,
 			const SteamNetworkingIPAddr& peerAddr,
-			SessionProtocol::ConnectionID& cid
+			SessionProtocol::ConnectionID& cid,
+			bool spectator
 		);
 		void HandleResults(int loserSide);
 
@@ -87,6 +94,13 @@ namespace sf4e {
 		// disables). See _relayPort.
 		void SetRelayPort(uint16_t port);
 
+		// Relay pipes for spectators, see _spectatorRelayBase.
+		void SetSpectatorRelayPorts(uint16_t basePort, int slots);
+
+		// Players come first in `clients`; spectators after them.
+		int PlayerCount() const;
+		int SpectatorCount() const;
+
 		// The build every joiner must match. Empty accepts any build; a lobby
 		// service sets it from the creator so both players run the same one.
 		void SetSidecarHash(const std::string& hash);
@@ -97,6 +111,7 @@ namespace sf4e {
 		typedef struct SessionMember {
 			SessionProtocol::MemberData data;
 			HSteamNetConnection conn;
+			int spectatorSlot = -1;
 		} SessionMember;
 
 		std::map<HSteamNetConnection, SessionProtocol::ConnectionID> cidMap;

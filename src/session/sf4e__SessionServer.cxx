@@ -38,7 +38,9 @@ SessionServer::SessionServer(std::string identity, std::string sidecarHash, bool
 	_dataDirty(false),
 	_lobbyData(SessionProtocol::LobbyData::NULL_LOBBY),
 	_listenSock(k_HSteamListenSocket_Invalid),
-	_relayPort(0)
+	_relayPort(0),
+	_spectatorRelayBase(0),
+	_spectatorSlots(0)
 {
 	_lobbyData.id = { _identity, "1" };
 	_lobbyData.editionSelect = editionSelect;
@@ -102,12 +104,32 @@ void SessionServer::SetRelayPort(uint16_t port) {
 	_relayPort = port;
 }
 
+void SessionServer::SetSpectatorRelayPorts(uint16_t basePort, int slots) {
+	_spectatorRelayBase = basePort;
+	_spectatorSlots = slots;
+}
+
+int SessionServer::PlayerCount() const {
+	int n = 0;
+	for (auto iter = clients.begin(); iter != clients.end(); iter++) {
+		if (!iter->data.spectator) n++;
+	}
+	return n;
+}
+
+int SessionServer::SpectatorCount() const {
+	return (int)clients.size() - PlayerCount();
+}
+
 void SessionServer::SetSidecarHash(const std::string& hash) {
 	_sidecarHash = hash;
 }
 
 void SessionServer::ResetLobby() {
 	_matchData.Clear();
+	for (auto iter = clients.begin(); iter != clients.end(); iter++) {
+		iter->data.watching = false;
+	}
 	ResetBattleSync();
 	_dataDirty = true;
 }
@@ -220,7 +242,7 @@ int SessionServer::Step()
 				}
 
 				SteamNetworkingIPAddr peerAddr = *(pIncomingMsg->m_identityPeer.GetIPAddr());
-				SessionProtocol::JoinResult joinResult = RegisterToWait(conn, request.port, request.sidecarHash, request.username, peerAddr, cid);
+				SessionProtocol::JoinResult joinResult = RegisterToWait(conn, request.port, request.sidecarHash, request.username, peerAddr, cid, request.spectator);
 				if (joinResult != SessionProtocol::JOIN_OK) {
 					spdlog::info("Server: rejecting registration for reason {}", (int)joinResult);
 					SessionProtocol::SessionJoinReject reject;
@@ -306,11 +328,15 @@ int SessionServer::Step()
 			}
 			else if (type == SessionProtocol::MT_BATTLE_LOADED) {
 				bSendBattleSynced = true;
+				// Only the players gate the start. A spectator that is slow, or
+				// never loads, is handled by GGPO on P1's side with a deadline.
 				for (int i = 0; i < clients.size(); i++) {
 					if (clients.at(i).conn == conn) {
 						clients.at(i).data.flags |= SessionProtocol::MF_BATTLE_LOADED;
 					}
-					bSendBattleSynced = bSendBattleSynced && (clients.at(i).data.flags & SessionProtocol::MF_BATTLE_LOADED);
+					if (!clients.at(i).data.spectator) {
+						bSendBattleSynced = bSendBattleSynced && (clients.at(i).data.flags & SessionProtocol::MF_BATTLE_LOADED);
+					}
 				}
 				_dataDirty = true;
 			}
@@ -389,6 +415,19 @@ int SessionServer::Step()
 	}
 
 	if (bSendLobbyAllReady) {
+		// The spectators in the room right now are the ones P1 will wait for.
+		// Anyone joining later watches the next match.
+		SessionProtocol::SessionDataUpdate updateMsg;
+		updateMsg.lobbyData = _lobbyData;
+		updateMsg.matchData = _matchData;
+		updateMsg.lobbyData.members.clear();
+		for (auto clientIter = clients.begin(); clientIter != clients.end(); clientIter++) {
+			if (clientIter->data.spectator) {
+				clientIter->data.watching = true;
+			}
+			updateMsg.lobbyData.members.push_back(clientIter->data);
+		}
+		BroadcastMessage(json(updateMsg));
 		BroadcastMessage(json(SessionProtocol::LobbyAllReady()));
 	}
 
@@ -541,13 +580,23 @@ SessionProtocol::JoinResult SessionServer::RegisterToWait(
 	const std::string& sidecarHash,
 	const std::string& name,
 	const SteamNetworkingIPAddr& peerAddr,
-	SessionProtocol::ConnectionID& cid
+	SessionProtocol::ConnectionID& cid,
+	bool spectator
 ) {
 	if (!_sidecarHash.empty() && sidecarHash != _sidecarHash) {
 		return SessionProtocol::JR_HASH_INVALID;
 	}
 
 	if (clients.size() >= MAX_SF4E_PROTOCOL_USERS) {
+		return SessionProtocol::JR_LOBBY_FULL;
+	}
+	if (!spectator && PlayerCount() >= 2) {
+		return SessionProtocol::JR_LOBBY_FULL;
+	}
+	if (spectator && SpectatorCount() >= MAX_SF4E_SPECTATORS) {
+		return SessionProtocol::JR_LOBBY_FULL;
+	}
+	if (spectator && _spectatorRelayBase != 0 && SpectatorCount() >= _spectatorSlots) {
 		return SessionProtocol::JR_LOBBY_FULL;
 	}
 
@@ -572,14 +621,50 @@ SessionProtocol::JoinResult SessionServer::RegisterToWait(
 	else {
 		peerAddr.ToString(peerAddrStr, SteamNetworkingIPAddr::k_cchMaxString, false);
 	}
-	SessionMember newMember{ {cid, name, peerAddrStr, reportedPort}, conn };
-	clients.push_back(std::move(newMember));
+	SessionMember newMember;
+	newMember.conn = conn;
+	newMember.data.connId = cid;
+	newMember.data.name = name;
+	newMember.data.ip = peerAddrStr;
+	newMember.data.port = reportedPort;
+	newMember.data.flags = 0;
+	newMember.data.spectator = spectator;
+	if (spectator && _spectatorRelayBase != 0) {
+		// Lowest free pipe. Slots stick to a member for as long as it stays,
+		// so everyone reads the same ports whenever they look.
+		int slot = 0;
+		for (;; slot++) {
+			bool taken = false;
+			for (auto iter = clients.begin(); iter != clients.end(); iter++) {
+				if (iter->spectatorSlot == slot) taken = true;
+			}
+			if (!taken) break;
+		}
+		newMember.spectatorSlot = slot;
+		newMember.data.port = _spectatorRelayBase + 2 * slot;
+		newMember.data.hostPort = _spectatorRelayBase + 2 * slot + 1;
+	}
+	if (spectator) {
+		clients.push_back(std::move(newMember));
+	}
+	else {
+		// Players stay in front of the spectators.
+		clients.insert(clients.begin() + PlayerCount(), std::move(newMember));
+	}
 	return SessionProtocol::JOIN_OK;
 }
 
 void SessionServer::HandleResults(int loserIndex) {
-	auto loser = clients.begin() + loserIndex;
-	clients.push_back(*loser);
-	clients.erase(loser);
+	// Winner stays as P1: the loser moves behind the other player, but
+	// never behind the spectators.
+	int nPlayers = PlayerCount();
+	if (loserIndex >= 0 && loserIndex < nPlayers && nPlayers > 1) {
+		SessionMember loser = clients.at(loserIndex);
+		clients.erase(clients.begin() + loserIndex);
+		clients.insert(clients.begin() + (nPlayers - 1), loser);
+	}
+	for (auto iter = clients.begin(); iter != clients.end(); iter++) {
+		iter->data.watching = false;
+	}
 	_matchData.Clear();
 }

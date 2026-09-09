@@ -9,7 +9,9 @@
 #include <strsafe.h>
 #include <winuser.h>
 
+#include <climits>
 #include <cstdio>
+#include <fstream>
 #include <string>
 
 #include <CLI/CLI.hpp>
@@ -58,6 +60,58 @@ int FindSF4ByEnvironmentVariable(
 		return 0;
 	}
 
+	return 1;
+}
+
+// The Steam persona name of the account that signed in most recently, from
+// Steam's own loginusers.vdf. Players know each other by it; the Windows
+// user name is often a first name or "PC".
+int ReadSteamPersonaName(_Out_ char* szName, _In_ int nSize) {
+	szName[0] = 0;
+	wchar_t szSteamPath[1024] = { 0 };
+	DWORD dwDataRead = sizeof(szSteamPath);
+	if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", RRF_RT_REG_SZ, NULL, szSteamPath, &dwDataRead) != ERROR_SUCCESS) {
+		spdlog::warn("ReadSteamPersonaName: no SteamPath in the registry");
+		return 0;
+	}
+	wchar_t szVdf[1024];
+	if (PathCchCombine(szVdf, 1024, szSteamPath, L"config\\loginusers.vdf") != S_OK) {
+		return 0;
+	}
+	std::ifstream file(szVdf);
+	if (!file.good()) {
+		spdlog::warn(L"ReadSteamPersonaName: could not open {}", szVdf);
+		return 0;
+	}
+	std::string best;
+	long long bestStamp = -1;
+	try {
+		tyti::vdf::object root = tyti::vdf::read(file);
+		for (auto it = root.childs.begin(); it != root.childs.end(); ++it) {
+			std::string persona = it->second->attribs["PersonaName"];
+			if (persona.empty()) {
+				continue;
+			}
+			long long stamp = 0;
+			try { stamp = std::stoll(it->second->attribs["Timestamp"]); } catch (...) {}
+			if (it->second->attribs["MostRecent"] == "1") {
+				stamp = LLONG_MAX;
+			}
+			if (stamp > bestStamp) {
+				bestStamp = stamp;
+				best = persona;
+			}
+		}
+	}
+	catch (...) {
+		spdlog::warn("ReadSteamPersonaName: loginusers.vdf did not parse");
+		return 0;
+	}
+	if (best.empty()) {
+		return 0;
+	}
+	strncpy_s(szName, nSize, best.c_str(), _TRUNCATE);
+	spdlog::info("Steam persona: {}", szName);
 	return 1;
 }
 
@@ -397,6 +451,7 @@ int WINAPI wWinMain(
 		}
 	}
 	strncpy_s(args.szServer, sizeof(args.szServer), serverOption.c_str(), _TRUNCATE);
+	ReadSteamPersonaName(args.szName, sizeof(args.szName));
 
 	if (!FindSF4(szGameDirectory, 1024, szExePath, 1024)) {
 		MessageBoxW(NULL, L"Cannot find Street Fighter 4: check logs for debugging", NULL, MB_OK);

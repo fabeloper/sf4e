@@ -20,8 +20,8 @@ cd /d "%~dp0"
 echo.
 echo [1/4] Windows Firewall
 netsh advfirewall firewall delete rule name="sf4e lobby" >nul 2>&1
-netsh advfirewall firewall add rule name="sf4e lobby" dir=in action=allow protocol=UDP localport=23400-23420,24001-24020 >nul
-echo       allowed UDP 23400-23420 and 24001-24020
+netsh advfirewall firewall add rule name="sf4e lobby" dir=in action=allow protocol=UDP localport=23400-23420,24001-24020,25001-25080 >nul
+echo       allowed UDP 23400-23420, 24001-24020 and 25001-25080
 
 echo [2/4] Power: never sleep on mains, lid does nothing
 powercfg /change standby-timeout-ac 0 >nul

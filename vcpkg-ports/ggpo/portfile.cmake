@@ -6,6 +6,7 @@ vcpkg_from_github(
     PATCHES
         "install-cmake-export.patch"
         "synctest-no-debugbreak.patch"
+        "spectator-robustness.patch"
 )
 
 vcpkg_cmake_configure(

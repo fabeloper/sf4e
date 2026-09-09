@@ -7,6 +7,11 @@
 // normal sf4e session client. When the match starts, both games send their
 // GGPO packets to the lobby's relay port and this program forwards each one
 // to the other player.
+//
+// Spectators get a relay "pipe" each: two ports, one that P1 sends to and one
+// that the spectator sends to. Whatever arrives on one side goes out to the
+// last address seen on the other, so neither side has to be recognised by
+// its address, which a symmetric NAT would defeat.
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -34,7 +39,11 @@ namespace {
 	const uint16_t MATCHMAKER_PORT = 23400;
 	const uint16_t FIRST_SESSION_PORT = 23401;   // 23401 .. 23420
 	const uint16_t FIRST_RELAY_PORT = 24001;     // 24001 .. 24020
-	const int MAX_PLAYERS_PER_LOBBY = 2;         // spectators are not relayed yet
+	const int MAX_PLAYERS_PER_LOBBY = 2;
+	const int MAX_SPECTATORS_PER_LOBBY = MAX_SF4E_SPECTATORS;
+	// Two ports per spectator pipe, two pipes per lobby: 25001 .. 25080.
+	const uint16_t FIRST_SPECTATOR_PORT = 25001;
+	const int SPECTATOR_PORTS_PER_LOBBY = MAX_SPECTATORS_PER_LOBBY * 2;
 	const ULONGLONG EMPTY_LOBBY_TIMEOUT_MS = 90 * 1000;
 	const ULONGLONG RELAY_ENDPOINT_TIMEOUT_MS = 20 * 1000;
 
@@ -133,7 +142,8 @@ namespace {
 					}
 				}
 				if (idx < 0) {
-					// A third sender. Spectators are not relayed yet.
+					// A third sender on the players' port. Spectators have
+					// their own pipes; anything else is noise.
 					continue;
 				}
 				eps[idx].lastSeen = now;
@@ -154,6 +164,69 @@ namespace {
 		}
 	};
 
+	// One spectator's pipe. P1 talks to `hostSide`, the spectator to
+	// `specSide`; each side's packets go to the last address seen on the
+	// other side.
+	struct Pipe {
+		SOCKET hostSock = INVALID_SOCKET;
+		SOCKET specSock = INVALID_SOCKET;
+		uint16_t hostPort = 0;
+		uint16_t specPort = 0;
+		Relay::Endpoint host, spec;
+		uint64_t packets = 0;
+
+		bool Open(uint16_t hostSide, uint16_t specSide) {
+			hostPort = hostSide;
+			specPort = specSide;
+			hostSock = OpenUdp(hostSide);
+			specSock = OpenUdp(specSide);
+			return hostSock != INVALID_SOCKET && specSock != INVALID_SOCKET;
+		}
+
+		void Clear() {
+			host.used = false;
+			spec.used = false;
+		}
+
+		void PumpSide(SOCKET in, Relay::Endpoint& sender, Relay::Endpoint& receiver, const char* who, uint16_t port, ULONGLONG now) {
+			char buf[2048];
+			for (;;) {
+				sockaddr_in from = { 0 };
+				int fromLen = sizeof(from);
+				int n = recvfrom(in, buf, sizeof(buf), 0, (sockaddr*)&from, &fromLen);
+				if (n <= 0) {
+					break;
+				}
+				if (!sender.used || !SameEndpoint(sender.addr, from)) {
+					sender.used = true;
+					sender.addr = from;
+					spdlog::info("pipe :{} learned {} at {}", port, who, Describe(from));
+				}
+				sender.lastSeen = now;
+				if (receiver.used) {
+					// Reply out of the receiver's own side, so its NAT sees
+					// the port it already talked to.
+					SOCKET out = (&receiver == &host) ? hostSock : specSock;
+					sendto(out, buf, n, 0, (sockaddr*)&receiver.addr, sizeof(receiver.addr));
+					packets++;
+				}
+			}
+		}
+
+		void Pump(ULONGLONG now) {
+			PumpSide(hostSock, host, spec, "P1", hostPort, now);
+			PumpSide(specSock, spec, host, "spectator", specPort, now);
+			if (host.used && now - host.lastSeen > RELAY_ENDPOINT_TIMEOUT_MS) {
+				spdlog::info("pipe :{} P1 timed out", hostPort);
+				host.used = false;
+			}
+			if (spec.used && now - spec.lastSeen > RELAY_ENDPOINT_TIMEOUT_MS) {
+				spdlog::info("pipe :{} spectator timed out", specPort);
+				spec.used = false;
+			}
+		}
+	};
+
 	struct Lobby {
 		int index = 0;
 		bool active = false;
@@ -162,9 +235,16 @@ namespace {
 		uint16_t sessionPort = 0;
 		std::unique_ptr<SessionServer> server;
 		Relay relay;
+		Pipe pipes[MAX_SPECTATORS_PER_LOBBY];
 		ULONGLONG lastNonEmpty = 0;
 
 		int PlayerCount() const {
+			return server ? server->PlayerCount() : 0;
+		}
+		int SpectatorCount() const {
+			return server ? server->SpectatorCount() : 0;
+		}
+		int MemberCount() const {
 			return server ? (int)server->clients.size() : 0;
 		}
 	};
@@ -199,6 +279,13 @@ namespace {
 		return nullptr;
 	}
 
+	void ClearRelays(Lobby& l) {
+		l.relay.Clear();
+		for (int k = 0; k < MAX_SPECTATORS_PER_LOBBY; k++) {
+			l.pipes[k].Clear();
+		}
+	}
+
 	void ResetLobby(Lobby& l, ULONGLONG now) {
 		if (l.active) {
 			spdlog::info("lobby {} ({}) released", l.index, l.code);
@@ -207,7 +294,7 @@ namespace {
 		l.code.clear();
 		l.hash.clear();
 		l.lastNonEmpty = now;
-		l.relay.Clear();
+		ClearRelays(l);
 		l.server->SetSidecarHash("");
 		l.server->ResetLobby();
 	}
@@ -232,7 +319,7 @@ namespace {
 				l.code = NewCode();
 				l.hash = req.value("hash", "");
 				l.lastNonEmpty = now;
-				l.relay.Clear();
+				ClearRelays(l);
 				l.server->SetSidecarHash(l.hash);
 				l.server->ResetLobby();
 				spdlog::info("lobby {} created: code {} session :{} relay :{} by {}",
@@ -246,18 +333,22 @@ namespace {
 			for (auto& c : code) {
 				c = (char)toupper((unsigned char)c);
 			}
+			bool spectate = req.value("spectate", false);
 			Lobby* l = FindByCode(code);
 			if (!l) {
 				return { {"ok", false}, {"error", "not_found"} };
 			}
-			if (l->PlayerCount() >= MAX_PLAYERS_PER_LOBBY) {
+			if (!spectate && l->PlayerCount() >= MAX_PLAYERS_PER_LOBBY) {
 				return { {"ok", false}, {"error", "lobby_full"} };
+			}
+			if (spectate && l->SpectatorCount() >= MAX_SPECTATORS_PER_LOBBY) {
+				return { {"ok", false}, {"error", "spectators_full"} };
 			}
 			std::string hash = req.value("hash", "");
 			if (!l->hash.empty() && !hash.empty() && hash != l->hash) {
 				return { {"ok", false}, {"error", "version_mismatch"} };
 			}
-			spdlog::info("lobby {} ({}) join lookup by {}", l->index, l->code, req.value("name", "?"));
+			spdlog::info("lobby {} ({}) {} lookup by {}", l->index, l->code, spectate ? "spectate" : "join", req.value("name", "?"));
 			return { {"ok", true}, {"code", l->code}, {"session_port", l->sessionPort} };
 		}
 		return { {"ok", false}, {"error", "bad_request"} };
@@ -290,8 +381,10 @@ int main(int argc, char** argv) {
 		Lobby& l = g_lobbies[i];
 		l.index = i;
 		l.sessionPort = FIRST_SESSION_PORT + i;
+		uint16_t specBase = FIRST_SPECTATOR_PORT + i * SPECTATOR_PORTS_PER_LOBBY;
 		l.server.reset(new SessionServer("sf4e-lobby-" + std::to_string(i), "", true, 3, roundTime));
 		l.server->SetRelayPort(FIRST_RELAY_PORT + i);
+		l.server->SetSpectatorRelayPorts(specBase, MAX_SPECTATORS_PER_LOBBY);
 		if (l.server->Listen(l.sessionPort) != 0) {
 			spdlog::critical("could not listen on session port {}", l.sessionPort);
 			return 1;
@@ -300,12 +393,19 @@ int main(int argc, char** argv) {
 			spdlog::critical("could not bind relay port {}", FIRST_RELAY_PORT + i);
 			return 1;
 		}
+		for (int k = 0; k < MAX_SPECTATORS_PER_LOBBY; k++) {
+			if (!l.pipes[k].Open(specBase + 2 * k, specBase + 2 * k + 1)) {
+				spdlog::critical("could not bind spectator ports {}-{}", specBase + 2 * k, specBase + 2 * k + 1);
+				return 1;
+			}
+		}
 	}
 
-	spdlog::info("sf4e lobby server up: matchmaker udp/{}, sessions udp/{}-{}, relays udp/{}-{}, {} lobbies",
+	spdlog::info("sf4e lobby server up: matchmaker udp/{}, sessions udp/{}-{}, relays udp/{}-{}, spectator pipes udp/{}-{}, {} lobbies",
 		MATCHMAKER_PORT,
 		FIRST_SESSION_PORT, FIRST_SESSION_PORT + NUM_LOBBIES - 1,
 		FIRST_RELAY_PORT, FIRST_RELAY_PORT + NUM_LOBBIES - 1,
+		FIRST_SPECTATOR_PORT, FIRST_SPECTATOR_PORT + NUM_LOBBIES * SPECTATOR_PORTS_PER_LOBBY - 1,
 		NUM_LOBBIES);
 
 	while (g_running) {
@@ -338,9 +438,12 @@ int main(int argc, char** argv) {
 			l.server->PrepareForCallbacks();
 			l.server->Step();
 			l.relay.Pump(now);
+			for (int k = 0; k < MAX_SPECTATORS_PER_LOBBY; k++) {
+				l.pipes[k].Pump(now);
+			}
 
 			if (l.active) {
-				if (l.PlayerCount() > 0) {
+				if (l.MemberCount() > 0) {
 					l.lastNonEmpty = now;
 				}
 				else if (now - l.lastNonEmpty > EMPTY_LOBBY_TIMEOUT_MS) {

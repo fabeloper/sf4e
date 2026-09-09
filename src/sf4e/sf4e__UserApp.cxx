@@ -1,5 +1,6 @@
 #include <chrono>
 #include <memory>
+#include <vector>
 
 #include <windows.h>
 #include <detours/detours.h>
@@ -55,33 +56,51 @@ sf4e::UserApp::Netplay::Netplay(
     std::string& name,
     uint8_t _deviceType,
     uint8_t _deviceIdx,
-    uint8_t _delay
+    uint8_t _delay,
+    bool _spectator
 ):
-    client(callbacks, sidecarHash, ggpoPort, name),
+    client(callbacks, sidecarHash, ggpoPort, name, _spectator),
     deviceType(_deviceType),
     deviceIdx(_deviceIdx),
-    delay(_delay)
+    delay(_delay),
+    spectator(_spectator)
 {}
 
 void fUserApp::_OnVsBattleTasksRegistered()
 {
-    // Start the GGPO connection
-    bool isPlayer = false;
-    for (int i = 0; i < 2; i++) {
-        if (netplay->client._lobbyData.members[i].name == netplay->client._name) {
-            isPlayer = true;
-            break;
+    std::vector<SessionProtocol::MemberData>& members = netplay->client._lobbyData.members;
+    char szAddr[SteamNetworkingIPAddr::k_cchMaxString];
+    netplay->client._serverAddr.ToString(szAddr, sizeof(szAddr), false);
+
+    // The server keeps the players in front of the spectators. An empty
+    // address means "at the session server", which is where the relay is.
+    std::vector<const SessionProtocol::MemberData*> playerMembers, spectatorMembers;
+    const SessionProtocol::MemberData* me = nullptr;
+    for (size_t i = 0; i < members.size(); i++) {
+        if (members[i].connId == netplay->client._cid) {
+            me = &members[i];
+        }
+        if (members[i].spectator) {
+            spectatorMembers.push_back(&members[i]);
+        }
+        else if (playerMembers.size() < 2) {
+            playerMembers.push_back(&members[i]);
         }
     }
+    bool isPlayer = !netplay->spectator && me != nullptr && !me->spectator;
+
     if (isPlayer) {
         GGPOPlayer players[MAX_SF4E_PROTOCOL_USERS];
-        for (int i = 0; i < 2 && i < netplay->client._lobbyData.members.size(); i++) {
-            SessionProtocol::MemberData& memberData = netplay->client._lobbyData.members[i];
-            GGPOPlayer& player = players[i];
+        int numPlayers = 0;
+        int localIdx = -1;
+        for (int i = 0; i < (int)playerMembers.size(); i++) {
+            const SessionProtocol::MemberData& memberData = *playerMembers[i];
+            GGPOPlayer& player = players[numPlayers++];
             player.size = sizeof(GGPOPlayer);
             player.player_num = i + 1;
-            if (netplay->client._lobbyData.members[i].name == netplay->client._name) {
+            if (playerMembers[i] == me) {
                 player.type = GGPO_PLAYERTYPE_LOCAL;
+                localIdx = i;
 
                 // Inject the chosen device into this player's side
                 Dimps::Pad::System* padSys = Dimps::Pad::System::staticMethods.GetSingleton();
@@ -92,65 +111,54 @@ void fUserApp::_OnVsBattleTasksRegistered()
                 (padSys->*padSysMethods.SetActiveButtonMapping)(Dimps::Pad::System::BUTTON_MAPPING_FIGHT);
             }
             else {
-                SessionProtocol::MemberData& memberData = netplay->client._lobbyData.members[i];
                 player.type = GGPO_PLAYERTYPE_REMOTE;
-                if (memberData.ip.empty()) {
-                    char szAddr[SteamNetworkingIPAddr::k_cchMaxString];
-                    netplay->client._serverAddr.ToString(szAddr, sizeof(szAddr), false);
-                    strcpy_s(player.u.remote.ip_address, 32, szAddr);
-                }
-                else {
-                    strcpy_s(player.u.remote.ip_address, 32, memberData.ip.c_str());
-                }
-
+                strcpy_s(player.u.remote.ip_address, 32, memberData.ip.empty() ? szAddr : memberData.ip.c_str());
                 player.u.remote.port = memberData.port;
             }
         }
-        for (int i = 2; i < netplay->client._lobbyData.members.size(); i++) {
-            SessionProtocol::MemberData& memberData = netplay->client._lobbyData.members[i];
-            GGPOPlayer& player = players[i];
-            player.type = GGPO_PLAYERTYPE_SPECTATOR;
-            player.u.remote.port = memberData.port;
 
-            if (memberData.ip.empty()) {
-                char szAddr[SteamNetworkingIPAddr::k_cchMaxString];
-                netplay->client._serverAddr.ToString(szAddr, sizeof(szAddr), false);
-                strcpy_s(player.u.remote.ip_address, 32, szAddr);
-            }
-            else {
-                strcpy_s(player.u.remote.ip_address, 32, memberData.ip.c_str());
+        // P1 feeds the spectators, and only those the server marked as
+        // watching this match; anyone who joined later waits for the next.
+        if (localIdx == 0) {
+            for (size_t i = 0; i < spectatorMembers.size() && numPlayers < MAX_SF4E_PROTOCOL_USERS; i++) {
+                const SessionProtocol::MemberData& memberData = *spectatorMembers[i];
+                if (!memberData.watching) {
+                    continue;
+                }
+                GGPOPlayer& player = players[numPlayers++];
+                player.size = sizeof(GGPOPlayer);
+                player.type = GGPO_PLAYERTYPE_SPECTATOR;
+                strcpy_s(player.u.remote.ip_address, 32, memberData.ip.empty() ? szAddr : memberData.ip.c_str());
+                player.u.remote.port = memberData.port;
+                spdlog::info("Netplay: feeding spectator {} at port {}", memberData.name, memberData.port);
             }
         }
         fSystem::StartGGPO(
             players,
-            netplay->client._lobbyData.members.size(),
+            numPlayers,
             netplay->client._ggpoPort,
             netplay->delay,
             netplay->client._matchData.rngSeed
         );
     }
     else {
-        // Always spectate from	P1 for now- the protocol has
-        // limited enough players that there's marginal bandwidth
-        // differences.	
-        // 
-        char szAddr[SteamNetworkingIPAddr::k_cchMaxString];
-        char* hostIP;
-        if (netplay->client._lobbyData.members[0].ip.empty()) {
-            netplay->client._serverAddr.ToString(szAddr, sizeof(szAddr), false);
-            hostIP = szAddr;
+        if (playerMembers.empty()) {
+            spdlog::error("Netplay: asked to spectate, but the lobby has no players");
+            return;
         }
-        else {
-            // Safe-_ish_ removal of const. This gets passed through
-            // to an inet_pton() call and never modified.
-            hostIP = (char*)netplay->client._lobbyData.members[0].ip.c_str();
-        }
-
+        // Spectate from P1. Through a relay pipe, our own member entry says
+        // which port is ours to send to; without one, P1's own port.
+        const SessionProtocol::MemberData& host = *playerMembers[0];
+        uint16_t hostPort = (me != nullptr && me->hostPort != 0) ? me->hostPort : host.port;
+        // Safe-_ish_ removal of const. This gets passed through to an
+        // inet_pton() call and never modified.
+        char* hostIP = (char*)(host.ip.empty() ? szAddr : host.ip.c_str());
+        spdlog::info("Netplay: spectating {} at {}:{}", host.name, hostIP, hostPort);
         fSystem::StartSpectating(
             netplay->client._ggpoPort,
             2,
             hostIP,
-            netplay->client._lobbyData.members[0].port,
+            hostPort,
             netplay->client._matchData.rngSeed
         );
     }
@@ -227,7 +235,7 @@ void fUserApp::Install() {
     DetourAttach((PVOID*)&rUserApp::staticMethods.Steam_PostUpdate, Steam_PostUpdate);
 }
 
-void fUserApp::StartSession(char* joinAddr, uint16_t port, std::string& sidecarHash, std::string& name, uint8_t deviceType, uint8_t deviceIdx, uint8_t delay) {
+void fUserApp::StartSession(char* joinAddr, uint16_t port, std::string& sidecarHash, std::string& name, uint8_t deviceType, uint8_t deviceIdx, uint8_t delay, bool spectator) {
     SteamNetworkingIPAddr addr;
     addr.Clear();
     addr.ParseString(joinAddr);
@@ -238,7 +246,8 @@ void fUserApp::StartSession(char* joinAddr, uint16_t port, std::string& sidecarH
         name,
         deviceType,
         deviceIdx,
-        delay
+        delay,
+        spectator
     ));
     netplay->client.Connect(addr);
 }

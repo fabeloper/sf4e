@@ -33,9 +33,11 @@ SessionClient::SessionClient(
 	const Callbacks& callbacks,
 	std::string sidecarHash,
 	uint16_t ggpoPort,
-	std::string& name
+	std::string& name,
+	bool spectator
 ):
 	_callbacks(callbacks),
+	_spectator(spectator),
 	_sidecarHash(sidecarHash),
 	_name(name),
 	_ggpoPort(ggpoPort),
@@ -179,6 +181,7 @@ int SessionClient::Step()
 			request.sidecarHash = _sidecarHash;
 			request.username = _name;
 			request.port = _ggpoPort;
+			request.spectator = _spectator;
 			json msg = request;
 			if (Send(msg, nullptr) != k_EResultOK) {
 				spdlog::warn("Client could send initial join request");
