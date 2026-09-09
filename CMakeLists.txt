@@ -2,7 +2,7 @@ cmake_minimum_required (VERSION 3.21)
 
 project (
     sf4e
-    VERSION 0.2.2
+    VERSION 0.2.3
     DESCRIPTION "A process-inspection and modification tool for the Steam release of Ultra Street Fighter 4."
     HOMEPAGE_URL "https://gitlab.com/adanducci/sf4e"
 )

@@ -1742,16 +1742,11 @@ void fSystem::SyncTestVerify(int frame, SaveState* state) {
             syncTest.nGameplayMismatches++;
             syncTest.nLastGameplayMismatchFrame = frame;
             if (syncTest.nGameplayMismatches <= 5 || (syncTest.nGameplayMismatches % 100) == 0) {
-                const StateSnapshot::CharaStateSnapshot& o = original.snapshot.chara[0];
-                const StateSnapshot::CharaStateSnapshot& r = rec.snapshot.chara[0];
                 spdlog::error(
-                    "Sync test GAMEPLAY divergence #{} @ frame {}: P1 status {}->{}, "
-                    "pos ({:.4f},{:.4f}) -> ({:.4f},{:.4f}), vit {}->{}",
+                    "Sync test GAMEPLAY divergence #{} @ frame {}: {}",
                     syncTest.nGameplayMismatches,
                     frame,
-                    o.status, r.status,
-                    o.rootPos[0], o.rootPos[1], r.rootPos[0], r.rootPos[1],
-                    o.vit.integral, r.vit.integral
+                    sf4e::SessionProtocol::DescribeSnapshotDiff(original.snapshot, rec.snapshot)
                 );
             }
         }

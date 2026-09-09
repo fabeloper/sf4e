@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <string>
 #include <utility>
 
@@ -26,6 +27,22 @@ using sf4e::SessionClient;
 using sf4e::SessionProtocol::LobbyReady;
 
 const int sf4e::SESSION_CLIENT_MAX_MESSAGES_PER_POLL = 20;
+
+namespace {
+	// A cross-peer state divergence used to pop a modal message box, which
+	// froze the game and read to players as a crash. Log exactly what drifted
+	// and leave the match cleanly instead: both sides return to the lobby, no
+	// freeze. The match is voided rather than continued, since the two games
+	// no longer agree on it.
+	void HandleDesync(int frame, const std::string& diff) {
+		spdlog::error("Desync at frame {}: {}", frame, diff);
+		rSystem* system = rSystem::staticMethods.GetSingleton();
+		if (system) {
+			*rSystem::GetReadyState(system) = rSystem::RS_ISLEAVING;
+		}
+	}
+}
+
 SessionClient* SessionClient::s_pCallbackInstance;
 bool SessionClient::bVerboseLogging = false;
 
@@ -269,13 +286,12 @@ int SessionClient::Step()
 					spdlog::error("Client: snapshot receipt: valid snapshot @ frame {} on receipt, confirm {}, sent {}", localSnapshot.frameIdx, localSnapshotIter->second.second.confirmed, localSnapshotIter->second.second.sent);
 				}
 				if (memcmp(&m.snapshot, &localSnapshot, sizeof(SessionProtocol::StateSnapshot)) != 0) {
+					std::string diff = SessionProtocol::DescribeSnapshotDiff(localSnapshot, m.snapshot);
 					if (_spectator) {
-						spdlog::warn("Spectator: my state differs from the players at frame {}", m.snapshot.frameIdx);
+						spdlog::warn("Spectator: my view differs from the players at frame {}: {}", m.snapshot.frameIdx, diff);
 					}
 					else {
-						spdlog::error("Client: snapshot receipt: Desync detected at frame {}", m.snapshot.frameIdx);
-						MessageBoxA(NULL, "Client: snapshot receipt: Desync detected!", NULL, MB_OK);
-						*rSystem::GetReadyState(rSystem::staticMethods.GetSingleton()) = rSystem::RS_ISLEAVING;
+						HandleDesync(m.snapshot.frameIdx, diff);
 					}
 				}
 
@@ -355,13 +371,12 @@ int SessionClient::Step()
 					// Caught up to the opponent- compare to a snapshot already sent by the opponent.
 					SessionProtocol::StateSnapshot& localSnapshot = localSnapshotIter->second.first;
 					if (memcmp(&remoteSnapshotIter->second, &localSnapshot, sizeof(SessionProtocol::StateSnapshot)) != 0) {
+						std::string diff = SessionProtocol::DescribeSnapshotDiff(localSnapshot, remoteSnapshotIter->second);
 						if (_spectator) {
-							spdlog::warn("Spectator: my state differs from the players at frame {} (pending)", localSnapshotIter->first);
+							spdlog::warn("Spectator: my view differs from the players at frame {} (pending): {}", localSnapshotIter->first, diff);
 						}
 						else {
-							spdlog::error("Client: snapshot reconciliation: Desync detected from pending at frame {}", localSnapshotIter->first);
-							MessageBoxA(NULL, "Client: snapshot reconciliation: Desync detected from pending!", NULL, MB_OK);
-							*rSystem::GetReadyState(rSystem::staticMethods.GetSingleton()) = rSystem::RS_ISLEAVING;
+							HandleDesync(localSnapshotIter->first, diff);
 						}
 					}
 					localSnapshotIter->second.second.confirmed = true;
