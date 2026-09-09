@@ -344,6 +344,7 @@ namespace {
 			if (!GetUserNameA(g_name, &len)) strcpy_s(g_name, "Player");
 		}
 		if (sf4e::args.szServer[0] != 0) g_mm.Configure(sf4e::args.szServer);
+		spdlog::info("Lobby: playing as {} ({})", g_name, sf4e::args.szName[0] ? "Steam persona" : "Windows user name");
 	}
 
 	// The server keeps the players in front of the spectators.

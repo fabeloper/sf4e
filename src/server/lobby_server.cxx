@@ -308,7 +308,7 @@ namespace {
 					active++;
 				}
 			}
-			return { {"ok", true}, {"lobbies", active}, {"capacity", NUM_LOBBIES} };
+			return { {"ok", true}, {"lobbies", active}, {"capacity", NUM_LOBBIES}, {"version", SF4E_VERSION} };
 		}
 		if (op == "create") {
 			for (auto& l : g_lobbies) {

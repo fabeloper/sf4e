@@ -129,6 +129,7 @@ target_link_libraries(SessionInteractiveTest PRIVATE nlohmann_json::nlohmann_jso
 # target_link_options(SessionInteractiveTest PRIVATE "/entry:wWinMainCRTStartup")
 
 add_executable(LobbyServer src/server/lobby_server.cxx)
+target_compile_definitions(LobbyServer PRIVATE SF4E_VERSION="${PROJECT_VERSION}")
 target_link_libraries(LobbyServer PRIVATE Session spdlog::spdlog nlohmann_json::nlohmann_json GameNetworkingSockets::shared "ws2_32")
 
 # The lobby server address baked into the launcher. Kept out of the tree:
