@@ -2,7 +2,7 @@ cmake_minimum_required (VERSION 3.21)
 
 project (
     sf4e
-    VERSION 0.2.3
+    VERSION 0.2.4
     DESCRIPTION "A process-inspection and modification tool for the Steam release of Ultra Street Fighter 4."
     HOMEPAGE_URL "https://gitlab.com/adanducci/sf4e"
 )
@@ -11,6 +11,10 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DDEBUG")
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 add_compile_definitions(WIN32_LEAN_AND_MEAN)
+# The build version, available to every target: the launcher stamps it, the
+# lobby compares it against the server's to offer an update, the server
+# reports it on a ping.
+add_compile_definitions(SF4E_VERSION="${PROJECT_VERSION}")
 
 find_library(LIB_DETOURS "detours")
 find_package(CLI11 CONFIG REQUIRED)
@@ -106,7 +110,7 @@ add_library(sf4e STATIC
 )
 target_link_libraries(
     sf4e
-    PRIVATE ${LIB_DETOURS} Session "Kernel32" "ws2_32" "Mswsock" "AdvApi32" "Shlwapi" "Bcrypt" "Xinput9_1_0" "Dbghelp"
+    PRIVATE ${LIB_DETOURS} Session "Kernel32" "ws2_32" "Mswsock" "AdvApi32" "Shlwapi" "Bcrypt" "Xinput9_1_0" "Dbghelp" "Shell32"
     PUBLIC imgui::imgui nlohmann_json::nlohmann_json spdlog::spdlog GameNetworkingSockets::shared ggpo::GGPO
 )
 
@@ -129,7 +133,6 @@ target_link_libraries(SessionInteractiveTest PRIVATE nlohmann_json::nlohmann_jso
 # target_link_options(SessionInteractiveTest PRIVATE "/entry:wWinMainCRTStartup")
 
 add_executable(LobbyServer src/server/lobby_server.cxx)
-target_compile_definitions(LobbyServer PRIVATE SF4E_VERSION="${PROJECT_VERSION}")
 target_link_libraries(LobbyServer PRIVATE Session spdlog::spdlog nlohmann_json::nlohmann_json GameNetworkingSockets::shared "ws2_32")
 
 # The lobby server address baked into the launcher. Kept out of the tree:

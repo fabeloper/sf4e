@@ -45,6 +45,9 @@ namespace sf4e {
 
 		int lobbiesInUse = 0;
 		int capacity = 0;
+		// The build the server reports on a ping ("a.b.c"), for the update
+		// notice. Empty if the server is too old to report it.
+		std::string serverVersion;
 
 		// "a.b.c.d:port" for the resolved session endpoint, for StartSession.
 		std::string SessionAddress() const;

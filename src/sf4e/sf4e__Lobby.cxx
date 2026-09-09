@@ -8,6 +8,7 @@
 
 #include <windows.h>
 #include <Xinput.h>
+#include <shellapi.h>
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>
@@ -480,6 +481,18 @@ namespace {
 
 	// Server reachability shown on the home screen. The address itself is
 	// never displayed anywhere; players only ever see whether it answers.
+	// true if version string `a` ("x.y.z") is strictly newer than `b`.
+	bool VersionNewer(const std::string& a, const char* b) {
+		if (a.empty()) return false;
+		int av[3] = { 0, 0, 0 }, bv[3] = { 0, 0, 0 };
+		sscanf(a.c_str(), "%d.%d.%d", &av[0], &av[1], &av[2]);
+		sscanf(b, "%d.%d.%d", &bv[0], &bv[1], &bv[2]);
+		for (int i = 0; i < 3; i++) {
+			if (av[i] != bv[i]) return av[i] > bv[i];
+		}
+		return false;
+	}
+
 	int g_serverStatus = -1;        // -1 checking, 0 unreachable, 1 online
 	bool g_pingInFlight = false;
 
@@ -503,6 +516,22 @@ namespace {
 			char cap[48];
 			snprintf(cap, sizeof(cap), "   %d of %d lobbies in use", g_mm.lobbiesInUse, g_mm.capacity);
 			dl->AddText(g_fontSmall, 20, ImVec2(64 + TextSize(g_fontBody, 26, sub).x, 136), PAPER_DIM, cap);
+		}
+
+		// Update notice: the server runs a newer build than this one, so the
+		// player is behind and cannot join its lobbies until they update.
+		// The address is never shown; only the version and a link.
+		bool updateAvailable = g_serverStatus == 1 && VersionNewer(g_mm.serverVersion, SF4E_VERSION);
+		if (updateAvailable) {
+			char msg[112];
+			snprintf(msg, sizeof(msg), "UPDATE AVAILABLE   v%s   (you have v%s)   -   press Y to download",
+				g_mm.serverVersion.c_str(), SF4E_VERSION);
+			Slant(dl, ImVec2(40, 168), ImVec2(ds.x - 40, 210), GOLD, 8);
+			dl->AddText(g_fontBody, 24, ImVec2(66, 176), INK, msg);
+			if (in.alt) {
+				ShellExecuteA(NULL, "open", "https://github.com/fabeloper/sf4e/releases/latest", NULL, NULL, SW_SHOWNORMAL);
+				Flash("Opening the download page in your browser", true);
+			}
 		}
 
 		char delayLabel[32];

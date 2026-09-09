@@ -12,12 +12,28 @@ rollback netcode while it runs, so you can remove it by deleting this folder.
 
 ## Installing
 
-1. Extract this whole folder anywhere you like. The Desktop is fine. Do **not**
+1. **Before extracting**, right-click the downloaded `.zip`, choose
+   **Properties**, tick **Unblock** near the bottom, and click OK. This is the
+   one step that stops the blue "Windows protected your PC" box from appearing
+   later. It is safe: it only clears the "downloaded from the internet" mark.
+2. Extract this whole folder anywhere you like. The Desktop is fine. Do **not**
    copy the files into the Street Fighter folder.
-2. Double-click `SF4Enhanced.exe`.
+3. Double-click `SF4Enhanced.exe`.
 
 That is all. It finds your Steam copy of the game by itself, starts it, and
 already knows where the lobby server is.
+
+If the blue **"Windows protected your PC"** box appears anyway, the app is not
+dangerous, it is only unsigned. Click **More info**, then **Run anyway**. Your
+antivirus may also warn, because the mod works by attaching to the game; that
+is expected. Unblocking the zip first (step 1) usually avoids all of this.
+
+## Staying up to date
+
+When the lobby screen shows **UPDATE AVAILABLE**, your build is older than the
+server's and you will not be able to join until you update. Press **Y** to open
+the download page, grab the newest release, and replace this folder with it.
+Everyone in a match must be on the same version.
 
 ## Playing someone
 

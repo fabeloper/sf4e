@@ -8,6 +8,20 @@ if errorlevel 1 ( echo CONFIGURE_FAILED & exit /b 1 )
 cmake --build msvc-build\default
 if errorlevel 1 ( echo BUILD_FAILED & exit /b 1 )
 cd msvc-build\default
+
+REM Code signing (optional). If a certificate is configured, sign the launcher
+REM and the injected DLL so Windows SmartScreen stops warning about an unknown
+REM publisher. Without a certificate this is a clean skip and nothing changes.
+REM To enable: put your code-signing certificate at deploy\codesign.pfx and set
+REM the environment variable SF4E_CERT_PASS to its password before running.
+if exist "..\..\deploy\codesign.pfx" (
+  echo Signing SF4Enhanced.exe and Sidecar.dll with deploy\codesign.pfx ...
+  signtool sign /fd SHA256 /f "..\..\deploy\codesign.pfx" /p "%SF4E_CERT_PASS%" /tr http://timestamp.digicert.com /td SHA256 SF4Enhanced.exe Sidecar.dll
+  if errorlevel 1 ( echo SIGN_FAILED & exit /b 1 )
+) else (
+  echo Code signing: no deploy\codesign.pfx found, skipping. The SmartScreen warning is expected; players can Unblock the zip or click "Run anyway".
+)
+
 cpack -G ZIP
 if errorlevel 1 ( echo CPACK_FAILED & exit /b 1 )
 

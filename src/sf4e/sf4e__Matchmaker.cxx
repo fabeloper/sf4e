@@ -165,6 +165,7 @@ void Matchmaker::Poll() {
 			sessionPort = (uint16_t)reply.value("session_port", 0);
 			lobbiesInUse = reply.value("lobbies", lobbiesInUse);
 			capacity = reply.value("capacity", capacity);
+			serverVersion = reply.value("version", serverVersion);
 			state = State::Done;
 			if (!code.empty()) {
 				spdlog::info("Matchmaker: lobby {} on session port {}", code, sessionPort);
