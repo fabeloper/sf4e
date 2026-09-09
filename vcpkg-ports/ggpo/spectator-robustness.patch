@@ -71,7 +71,7 @@ diff -ruN a/src/lib/ggpo/backends/spectator.cpp b/src/lib/ggpo/backends/spectato
  }
 diff -ruN a/src/lib/ggpo/backends/spectator.h b/src/lib/ggpo/backends/spectator.h
 --- a/src/lib/ggpo/backends/spectator.h	2026-09-09 16:04:49.075397700 +0200
-+++ b/src/lib/ggpo/backends/spectator.h	2026-09-09 16:04:49.197202600 +0200
++++ b/src/lib/ggpo/backends/spectator.h	2026-09-09 18:00:02.620080400 +0200
 @@ -15,7 +15,7 @@
  #include "timesync.h"
  #include "network/udp_proto.h"
@@ -81,7 +81,7 @@ diff -ruN a/src/lib/ggpo/backends/spectator.h b/src/lib/ggpo/backends/spectator.
  
  class SpectatorBackend : public IQuarkBackend, IPollSink, Udp::Callbacks {
  public:
-@@ -30,7 +30,13 @@
+@@ -30,10 +30,16 @@
     virtual GGPOErrorCode SyncInput(void *values, int size, int *disconnect_flags);
     virtual GGPOErrorCode IncrementFrame(void);
     virtual GGPOErrorCode DisconnectPlayer(GGPOPlayerHandle handle) { return GGPO_ERRORCODE_UNSUPPORTED; }
@@ -94,8 +94,13 @@ diff -ruN a/src/lib/ggpo/backends/spectator.h b/src/lib/ggpo/backends/spectator.
 +      return GGPO_OK;
 +   }
     virtual GGPOErrorCode SetFrameDelay(GGPOPlayerHandle player, int delay) { return GGPO_ERRORCODE_UNSUPPORTED; }
-    virtual GGPOErrorCode SetDisconnectTimeout(int timeout) { return GGPO_ERRORCODE_UNSUPPORTED; }
-    virtual GGPOErrorCode SetDisconnectNotifyStart(int timeout) { return GGPO_ERRORCODE_UNSUPPORTED; }
+-   virtual GGPOErrorCode SetDisconnectTimeout(int timeout) { return GGPO_ERRORCODE_UNSUPPORTED; }
+-   virtual GGPOErrorCode SetDisconnectNotifyStart(int timeout) { return GGPO_ERRORCODE_UNSUPPORTED; }
++   virtual GGPOErrorCode SetDisconnectTimeout(int timeout) { _host.SetDisconnectTimeout(timeout); return GGPO_OK; }
++   virtual GGPOErrorCode SetDisconnectNotifyStart(int timeout) { _host.SetDisconnectNotifyStart(timeout); return GGPO_OK; }
+ 
+ public:
+    virtual void OnMsg(sockaddr_in &from, UdpMsg *msg, int len);
 @@ -53,6 +59,7 @@
     int                   _input_size;
     int                   _num_players;

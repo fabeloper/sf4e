@@ -765,6 +765,13 @@ void fSystem::StartSpectating(unsigned short localport, int num_players, char* h
         MessageBoxA(NULL, "GGPO could not start, check logs", NULL, MB_OK);
     }
 
+    // When the host closes its session at the end of the match, the last
+    // input packets can be lost and nothing retransmits them. Silence is
+    // the signal then: three seconds without any packet and we leave, and
+    // a player's game still gets ten before its own peer gives up on it.
+    ggpo_set_disconnect_timeout(ggpo, 3000);
+    ggpo_set_disconnect_notify_start(ggpo, 1000);
+
     nNextBattleStartFlowTarget = BF__MATCH_START;
     bUpdateAllowed = false;
     fVsBattle::bTerminateOnNextLeftBattle = true;
