@@ -715,7 +715,13 @@ namespace {
 		dl->AddText(g_fontBody, 26, ImVec2(64, 132), subCol, sub);
 		if (g_serverStatus == 1 && g_mm.capacity > 0) {
 			char cap[96];
-			snprintf(cap, sizeof(cap), "   %d playing, %d looking   (%d of %d lobbies)", g_mm.playersOnline, g_mm.browsing, g_mm.lobbiesInUse, g_mm.capacity);
+
+			if (g_mm.serverPingMs >= 0) {
+				snprintf(cap, sizeof(cap), "   %d playing, %d looking   (%d of %d lobbies) %d ms to this server", g_mm.playersOnline, g_mm.browsing, g_mm.lobbiesInUse, g_mm.capacity, g_mm.serverPingMs);
+			} else {
+				snprintf(cap, sizeof(cap), "   %d playing, %d looking   (%d of %d lobbies)", g_mm.playersOnline, g_mm.browsing, g_mm.lobbiesInUse, g_mm.capacity);
+			}
+	
 			dl->AddText(g_fontSmall, 20, ImVec2(64 + TextSize(g_fontBody, 26, sub).x, 136), PAPER_DIM, cap);
 		}
 

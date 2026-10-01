@@ -61,6 +61,10 @@ namespace sf4e {
 
 		int lobbiesInUse = 0;
 		int capacity = 0;
+
+		int serverPingMs = -1;
+		ULONGLONG _pingSentAt = 0;
+	
 		// Players connected to a lobby, and people who looked in the last minute.
 		int playersOnline = 0;
 		int browsing = 0;
