@@ -134,6 +134,7 @@ void Matchmaker::Ping() {
 		return;
 	}
 	json req = { {"op", "ping"} };
+	_pingSentAt = GetTickCount64();
 	Send(req.dump());
 }
 
@@ -179,6 +180,12 @@ void Matchmaker::Poll() {
 			secret = reply.value("secret", "");
 			lobbiesInUse = reply.value("lobbies", lobbiesInUse);
 			capacity = reply.value("capacity", capacity);
+
+			if(_pingSentAt != 0) {
+				serverPingMs = (int)(GetTickCount64() - _pingSentAt);
+				_pingSentAt = 0;
+			}
+
 			playersOnline = reply.value("players", playersOnline);
 			browsing = reply.value("browsing", browsing);
 			serverVersion = reply.value("version", serverVersion);
