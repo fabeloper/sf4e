@@ -3,17 +3,15 @@
 A process-inspection and modification tool for the Steam release of _Ultra Street Fighter 4_.
 
 > [!WARNING]
-> **SF4Enhanced is no longer maintained.** Development stopped on 4 October 2026 and the
-> public lobby servers have been shut down, so the released builds can no longer find a
-> lobby on their own.
+> **SF4Enhanced is no longer maintained.** Development stopped on 4 October 2026.
 >
 > For rollback netplay in Ultra Street Fighter IV, use
 > [SF4 Ember Netplay](https://github.com/Confetti3/SF4-Ember-Netplay), which has become
 > the community standard.
 >
-> The last build is **1.2.0**. It has no default server: to play, one person runs the
-> lobby server that ships with the release and each player puts its address in a
-> `server.txt` file next to `SF4Enhanced.exe` (see [SERVER.md](SERVER.md)).
+> The last build is **[1.2.1](../../releases/latest)**. The public lobby servers stay
+> online for the people who still play on them, with no promise of how long. Anyone can
+> also run their own (see [SERVER.md](SERVER.md)).
 >
 > The code stays here under its license for anyone who wants to read it, fork it or build
 > on it. Thank you to everyone who played, helped and supported the project.

@@ -37,7 +37,7 @@ namespace {
 		float nameInsetX = 0.082f;
 		float nameY = 0.135f;
 		float nameSize = 0.036f;
-		float connectionY = 0.137f;
+		float connectionY = 0.168f;
 		float connectionSize = 0.026f;
 		float waitingY = 0.30f;
 	};

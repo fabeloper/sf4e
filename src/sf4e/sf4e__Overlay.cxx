@@ -2602,7 +2602,7 @@ void Overlay::DrawOverlay() {
 		DrawTaskWindow(&show_task_window);
 	}
 
-	if (fSystem::ggpo) {
+	if (fSystem::ggpo && fSystem::syncTest.bActive) {
 		DrawGGPOStatsOverlay(fSystem::ggpo, fSystem::players);
 	}
 
