@@ -320,7 +320,7 @@ void fUserApp::Steam_PostUpdate() {
     }
 
     if (fSystem::ggpo) {
-        ggpo_idle(fSystem::ggpo, fSystem::bLegacyTick ? 1 : 0);
+        ggpo_idle(fSystem::ggpo, 0);
     }
     fSystem::StepPacing();
 

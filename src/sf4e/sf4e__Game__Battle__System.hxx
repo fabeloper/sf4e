@@ -72,8 +72,6 @@ namespace sf4e {
 
 				static bool bHaltAfterNext;
 				static bool bUpdateAllowed;
-				// SF4E_LEGACY_TICK=1: the tick as it was before, for an A/B on one build.
-				static bool bLegacyTick;
 				static int nExtraFramesToSimulate;
 
 				// GGPO broke one of its own invariants and the match was torn
