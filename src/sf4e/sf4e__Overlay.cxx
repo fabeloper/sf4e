@@ -42,6 +42,7 @@
 #include "sf4e__Game__Battle__Vfx.hxx"
 #include "sf4e__GameEvents.hxx"
 #include "sf4e__Lobby.hxx"
+#include "sf4e__MatchHud.hxx"
 #include "sf4e__Matchmaker.hxx"
 #include "sf4e__Overlay.hxx"
 #include "sf4e__Pad.hxx"
@@ -148,6 +149,7 @@ static bool show_log_window = false;
 static bool show_main_menu_window = false;
 static bool show_memento_window = false;
 static bool show_network_window = false;
+static bool show_match_hud_window = false;
 static bool show_pad_window = false;
 static bool show_sound_window = false;
 static bool show_system_window = false;
@@ -2405,6 +2407,7 @@ void Overlay::DrawOverlay() {
 	NewFrame();
 
 	DrawHashOverlay();
+	sf4e::MatchHud::Draw();
 	sf4e::Lobby::Draw();
 	if (ImGui::IsMousePosValid() && ImGui::GetIO().MousePos.y < 200) {
 		if (BeginMainMenuBar()) {
@@ -2493,6 +2496,9 @@ void Overlay::DrawOverlay() {
 				if (MenuItem("Network test")) {
 					show_network_window = true;
 				}
+				if (MenuItem("Match HUD")) {
+					show_match_hud_window = true;
+				}
 
 				ImGui::EndMenu();
 			}
@@ -2547,6 +2553,9 @@ void Overlay::DrawOverlay() {
 	fMainMenu::bOverrideItemObserverState = show_network_window ? rMainMenu::MMIOS_TRANSITION : -1;
 	if (show_network_window) {
 		DrawNetworkWindow(&show_network_window);
+	}
+	if (show_match_hud_window) {
+		sf4e::MatchHud::DrawTuningWindow(&show_match_hud_window);
 	}
 
 	if (show_pad_window) {

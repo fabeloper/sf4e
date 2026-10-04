@@ -44,12 +44,16 @@ namespace {
 	int g_desyncLogged = 0;
 	// Leave the match. Called both by the PC that spotted the fork and by the
 	// one the server relays it to, so the two always leave together.
-	void AbortForDesync() {
-		SessionClient::bDesyncAbort = true;
+	void LeaveBattle() {
 		rSystem* system = rSystem::staticMethods.GetSingleton();
 		if (system) {
 			*rSystem::GetReadyState(system) = rSystem::RS_ISLEAVING;
 		}
+	}
+
+	void AbortForDesync() {
+		SessionClient::bDesyncAbort = true;
+		LeaveBattle();
 	}
 
 	void HandleDesync(int frame, const SessionProtocol::StateSnapshot& mine, const SessionProtocol::StateSnapshot& theirs) {
@@ -103,6 +107,7 @@ SessionClient* SessionClient::s_pCallbackInstance;
 bool SessionClient::bVerboseLogging = false;
 bool SessionClient::bDesyncAbort = false;
 bool SessionClient::bConnectionLost = false;
+SessionClient::ForfeitNotice SessionClient::forfeit;
 
 SessionClient::SessionClient(
 	const Callbacks& callbacks,
@@ -449,16 +454,18 @@ int SessionClient::Step()
 
 			std::string chosenIp;
 			uint16_t chosenPort = 0;
+			int rttMs = -1;
 			if (_punch.IsOpen() && _punch.Punch(_directPeerIp, _directPeerPort,
 					_directPeerLocalIp, _directPeerLocalPort,
-					_directToken, 900, chosenIp, chosenPort)) {
+					_directToken, 900, chosenIp, chosenPort, rttMs)) {
 				// Remember the address that actually answered; the match will
 				// point GGPO straight at it.
 				_provenIp = chosenIp;
 				_provenPort = chosenPort;
+				_directRttMs = rttMs;
 				_punchProven = true;
 				_lastKeepaliveTick = GetTickCount();
-				spdlog::info("Peer to peer: path proven and held open until the match starts");
+				spdlog::info("Peer to peer: path proven and held open until the match starts, {} ms round trip", _directRttMs);
 			}
 			else {
 				_punchProven = false;
@@ -475,6 +482,21 @@ int SessionClient::Step()
 				spdlog::warn("The other player's game detected a desync and left; ending this match too");
 				AbortForDesync();
 			}
+		}
+		else if (type == SessionProtocol::MT_MATCH_FORFEITED) {
+			SessionProtocol::MatchForfeited notice;
+			try {
+				msg.get_to(notice);
+			}
+			catch (json::exception e) {
+				spdlog::warn("Client: could not deserialize the forfeit notice");
+				continue;
+			}
+			forfeit.pending = true;
+			forfeit.loserSide = notice.loserSide;
+			forfeit.mySide = MySide();
+			spdlog::info("Match ended by forfeit: side {} left", notice.loserSide);
+			LeaveBattle();
 		}
 		else if (type == SessionProtocol::MT_FORWARD) {
 			spdlog::debug("Received forwarded message: {}", msg.dump());
@@ -651,10 +673,12 @@ EResult SessionClient::Send(nlohmann::json& msg, int64_t* outMessageNum) {
 	);
 }
 
-EResult SessionClient::Lobby_Ready(int inputDelay)
+EResult SessionClient::Lobby_Ready(int inputDelay, int serverPingMs)
 {
 	LobbyReady msg;
 	msg.inputDelay = inputDelay;
+	msg.serverPingMs = serverPingMs;
+	msg.directRoundTripMs = DirectRoundTripMs();
 	json j = msg;
 	EResult result = Send(j, &_outstandingReadyRequestNumber);
 	if (result != k_EResultOK) {
@@ -673,6 +697,31 @@ EResult SessionClient::Lobby_Unready()
 		spdlog::warn("Client: could not send not-ready! Result: {}", (int)result);
 	}
 	return result;
+}
+
+EResult SessionClient::Lobby_Forfeit()
+{
+	json msg = SessionProtocol::LobbyForfeit();
+	EResult result = Send(msg, nullptr);
+	if (result != k_EResultOK) {
+		spdlog::warn("Client: could not send the forfeit! Result: {}", (int)result);
+	}
+	return result;
+}
+
+int SessionClient::MySide() const
+{
+	int side = 0;
+	for (const SessionProtocol::MemberData& member : _lobbyData.members) {
+		if (member.spectator) {
+			continue;
+		}
+		if (member.connId.host == _cid.host && member.connId.user == _cid.user) {
+			return side;
+		}
+		side++;
+	}
+	return -1;
 }
 
 EResult SessionClient::Lobby_ReportResults(int loserSide)
@@ -882,12 +931,14 @@ bool SessionClient::TryDirectPath() {
 	if (_directEnabled && _directPeerPort != 0 && _punch.IsOpen()) {
 		std::string ip;
 		uint16_t port = 0;
+		int rttMs = -1;
 		if (_punch.Punch(_directPeerIp, _directPeerPort, _directPeerLocalIp, _directPeerLocalPort,
-				_directToken, 5000, ip, port, true)) {
+				_directToken, 5000, ip, port, rttMs, true)) {
 			_provenIp = ip;
 			_provenPort = port;
+			_directRttMs = rttMs;
 			_punchProven = true;
-			spdlog::info("Peer to peer: path proven at match start");
+			spdlog::info("Peer to peer: path proven at match start, {} ms round trip", _directRttMs);
 		}
 		else if (_punchProven) {
 			_punchProven = false;

@@ -38,6 +38,7 @@
 #include "sf4e__Game.hxx"
 #include "sf4e__GameEvents.hxx"
 #include "sf4e__Lobby.hxx"
+#include "sf4e__MatchHud.hxx"
 #include "sf4e__Game__Battle.hxx"
 #include "sf4e__Game__Battle__Hud.hxx"
 #include "sf4e__Game__Battle__System.hxx"
@@ -316,6 +317,7 @@ struct RollbackCost {
     }
 };
 static RollbackCost g_rollbackCost;
+static int g_remotePingMs = 0;
 
 static void LogRollbackCost(int frame) {
     RollbackCost& cost = g_rollbackCost;
@@ -828,6 +830,10 @@ void fSystem::BattleUpdate() {
         }
 
         bPredictionStalled = (result == GGPO_ERRORCODE_PREDICTION_THRESHOLD);
+        if (!syncTest.bActive) {
+            bool fighting = flowNow == BF__READY || flowNow == BF__FIGHT || flowNow == BF__FINISH;
+            sf4e::MatchHud::Tick(fighting, g_remotePingMs, bPredictionStalled);
+        }
         if (GGPO_SUCCEEDED(result)) {
             fPadSystem::Inputs ggpoInputs[2] = { {0, 0}, {0, 0} };
             int disconnect_flags = 0;
@@ -898,6 +904,7 @@ void fSystem::BattleUpdate() {
                             continue;
                         }
                         PlayerConnectionInfo& p = players[i];
+                        g_remotePingMs = stats.network.ping;
                         if (stats.network.ping < p.pingMin) p.pingMin = stats.network.ping;
                         if (stats.network.ping > p.pingMax) p.pingMax = stats.network.ping;
                         p.pingSum += stats.network.ping;
@@ -1047,6 +1054,7 @@ void fSystem::CloseBattle() {
         }
         nIdleFramesInTimeline = 0;
         nUntrackedIdleFrames = 0;
+        sf4e::MatchHud::EndMatch();
         ResetPacing("match");
         ggpo_close_session(ggpo);
         ggpo = nullptr;

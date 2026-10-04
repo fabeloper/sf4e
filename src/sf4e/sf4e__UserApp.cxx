@@ -24,6 +24,7 @@
 #include "sf4e__Game__Battle__System.hxx"
 #include "sf4e__GameEvents.hxx"
 #include "sf4e__Overlay.hxx"
+#include "sf4e__MatchHud.hxx"
 #include "sf4e__UserApp.hxx"
 
 namespace SessionProtocol = sf4e::SessionProtocol;
@@ -157,11 +158,13 @@ void fUserApp::_OnVsBattleTasksRegistered()
             }
         }
         int matchDelay = netplay->client._matchData.inputDelay[0];
-        if (matchDelay < 0) {
-            matchDelay = netplay->delay;
+        if (matchDelay <= SessionProtocol::INPUT_DELAY_AUTO) {
+            matchDelay = SessionProtocol::INPUT_DELAY_DEFAULT;
         }
-        else if (matchDelay != (int)netplay->delay) {
-            spdlog::info("Input delay {} for this match (you chose {}; the higher choice is used for both)", matchDelay, (int)netplay->delay);
+        spdlog::info("Input delay {} for this match ({})", matchDelay,
+            netplay->delay == SessionProtocol::INPUT_DELAY_AUTO ? "automatic" : "the higher of both players' choices");
+        if (playerMembers.size() == 2) {
+            MatchHud::BeginMatch(playerMembers[0]->name, playerMembers[1]->name, matchDelay, direct);
         }
         fSystem::StartGGPO(
             players,
@@ -184,6 +187,9 @@ void fUserApp::_OnVsBattleTasksRegistered()
         // inet_pton() call and never modified.
         char* hostIP = (char*)(host.ip.empty() ? szAddr : host.ip.c_str());
         spdlog::info("Netplay: spectating {} at {}:{}", host.name, hostIP, hostPort);
+        if (playerMembers.size() == 2) {
+            MatchHud::BeginMatch(playerMembers[0]->name, playerMembers[1]->name, 0, false);
+        }
         fSystem::StartSpectating(
             netplay->client._ggpoPort,
             2,
