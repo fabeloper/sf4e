@@ -13,6 +13,7 @@ using fSystem = fPad::System;
 fSystem::Inputs fSystem::playbackData[PLAYBACK_MAX][2];
 int fSystem::playbackFrame = -1;
 bool fSystem::bSuppressGameInput = false;
+int fSystem::mutedSide = -1;
 
 void fPad::Install() {
 	System::Install();
@@ -32,21 +33,21 @@ void fSystem::Install() {
 }
 
 unsigned int fSystem::GetButtons_RawRising(int pindex) {
-    if (bSuppressGameInput) {
+    if (bSuppressGameInput || pindex == mutedSide) {
         return 0;
     }
     return (this->*rSystem::publicMethods.GetButtons_RawRising)(pindex);
 }
 
 unsigned int fSystem::GetButtons_RawFalling(int pindex) {
-    if (bSuppressGameInput) {
+    if (bSuppressGameInput || pindex == mutedSide) {
         return 0;
     }
     return (this->*rSystem::publicMethods.GetButtons_RawFalling)(pindex);
 }
 
 unsigned int fSystem::GetButtons_RawRisingWithRepeat(int pindex) {
-    if (bSuppressGameInput) {
+    if (bSuppressGameInput || pindex == mutedSide) {
         return 0;
     }
     return (this->*rSystem::publicMethods.GetButtons_RawRisingWithRepeat)(pindex);
@@ -56,7 +57,7 @@ unsigned int fSystem::GetButtons_MappedOn(int pindex) {
     if (playbackFrame > -1) {
         return playbackData[playbackFrame][pindex].mappedOn;
     }
-    if (bSuppressGameInput) {
+    if (bSuppressGameInput || pindex == mutedSide) {
         return 0;
     }
 
@@ -68,7 +69,7 @@ unsigned int fSystem::GetButtons_RawOn(int pindex) {
     if (playbackFrame > -1) {
         return playbackData[playbackFrame][pindex].rawOn;
     }
-    if (bSuppressGameInput) {
+    if (bSuppressGameInput || pindex == mutedSide) {
         return 0;
     }
 

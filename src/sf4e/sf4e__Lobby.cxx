@@ -28,10 +28,10 @@
 #include "sf4e.hxx"
 #include "sf4e__Lobby.hxx"
 #include "sf4e__Game__Battle__System.hxx"
-#include "sf4e__GameEvents.hxx"
 #include "sf4e__Matchmaker.hxx"
 #include "sf4e__MatchHud.hxx"
 #include "sf4e__Pad.hxx"
+#include "sf4e__Practice.hxx"
 #include "sf4e__UserApp.hxx"
 #include "sf4e__UiStyle.hxx"
 
@@ -40,10 +40,7 @@ using Dimps::Event::EventBaseWithEC;
 namespace rBattle = Dimps::Game::Battle;
 using rVsMode = Dimps::GameEvents::VsMode;
 using rPad = Dimps::Pad::System;
-using Dimps::Event::EventController;
-using rMainMenu = Dimps::GameEvents::MainMenu;
 using fSystem = sf4e::Game::Battle::System;
-using fVsBattle = sf4e::GameEvents::VsBattle;
 using fUserApp = sf4e::UserApp;
 using namespace sf4e::Ui;
 
@@ -255,7 +252,7 @@ namespace {
 	int g_charaCursor = 0;
 	int g_lobbyRow = 0;      // 0 = grid, 1 = options, 2 = actions
 	int g_optionCursor = 0;
-	enum LobbyAction { ACT_READY, ACT_TRAINING, ACT_LEAVE, ACT_COUNT };
+	enum LobbyAction { ACT_READY, ACT_PRACTICE, ACT_LEAVE, ACT_COUNT };
 	int g_actionCursor = ACT_READY;
 	rVsMode::ConfirmedCharaConditions g_cond = { 0, 0, 0, 0, 0, 0, 0, 0, (BYTE)rBattle::ED_USF4 };
 	int g_stage = 0;
@@ -1269,181 +1266,117 @@ namespace {
 		Flash(iLeft ? "You left the match. It counts as a loss." : "Your opponent left the match. You win.", !iLeft);
 	}
 
-	// ---------------------------------------------------------------- training while waiting
-	// A player alone in a lobby can practise until an opponent joins. The lobby
-	// session stays connected throughout; the engine is only touched from the
-	// game thread, through OnGameTick.
-	const ULONGLONG ENTER_TRAINING_TIMEOUT_MS = 5000;
-	const ULONGLONG FORCE_LEAVE_TRAINING_AFTER_MS = 4000;
-	enum TrainingMenuItem { TM_CONTINUE, TM_OPTIONS, TM_LOBBY, TM_COUNT };
-	const char* const TRAINING_MENU_ITEMS[TM_COUNT] = { "CONTINUE", "TRAINING OPTIONS", "BACK TO LOBBY" };
-	const OverlayMenu TRAINING_MENU = { "TRAINING", "Waiting for an opponent to join your lobby", TRAINING_MENU_ITEMS, TM_COUNT, -1 };
+	// ---------------------------------------------------------------- practice while waiting
+	// A player alone in a lobby can fight a motionless opponent until someone
+	// joins. The lobby session stays connected throughout; the engine is only
+	// touched from the game thread, through OnGameTick.
+	const ULONGLONG PRACTICE_START_TIMEOUT_MS = 5000;
+	const ULONGLONG PRACTICE_STOP_RETRY_MS = 500;
+	const BYTE PRACTICE_DUMMY_CHARA = 0;
+	const BYTE PRACTICE_DUMMY_COLOR = 1;
+	enum PracticeMenuItem { PM_CONTINUE, PM_LOBBY, PM_COUNT };
+	const char* const PRACTICE_MENU_ITEMS[PM_COUNT] = { "CONTINUE", "BACK TO LOBBY" };
+	const OverlayMenu PRACTICE_MENU = { "PRACTICE", "Waiting for an opponent to join your lobby", PRACTICE_MENU_ITEMS, PM_COUNT, -1 };
 
-	enum class EngineRequest { None, EnterTraining, LeaveTraining, EndTrainingMode };
+	enum class EngineRequest { None, StartPractice, StopPractice, AbandonPractice };
 	std::atomic<EngineRequest> g_engineRequest(EngineRequest::None);
+	sf4e::Practice::Setup g_practiceSetup;
 
-	bool g_trainingWhileWaiting = false;
-	ULONGLONG g_trainingRequestedAt = 0;
-	bool g_trainingMenuOpen = false;
-	int g_trainingMenuCursor = TM_CONTINUE;
-	// TRAINING OPTIONS hands the next Start press to the game's own menu.
-	bool g_gameMenuArmed = false;
-	bool g_gameMenuSeenOpen = false;
-	ULONGLONG g_leavingTrainingSince = 0;
-	bool g_trainingModeEndForced = false;
+	bool g_practising = false;
+	ULONGLONG g_practiceRequestedAt = 0;
+	bool g_practiceMenuOpen = false;
+	int g_practiceMenuCursor = PM_CONTINUE;
+	bool g_leavingPractice = false;
+	ULONGLONG g_practiceStopRequestedAt = 0;
 
 	bool WaitingAlone() {
 		return PlayerAt(0) != nullptr && PlayerAt(1) == nullptr;
 	}
 
-	void ResetTraining() {
-		g_trainingWhileWaiting = false;
-		g_trainingRequestedAt = 0;
-		g_trainingMenuOpen = false;
-		g_gameMenuArmed = false;
-		g_gameMenuSeenOpen = false;
-		g_leavingTrainingSince = 0;
-		g_trainingModeEndForced = false;
+	void ResetPractice() {
+		g_practising = false;
+		g_practiceRequestedAt = 0;
+		g_practiceMenuOpen = false;
+		g_leavingPractice = false;
 		fSystem::bNativePauseBlocked = false;
 	}
 
-	void RequestTraining() {
-		ResetTraining();
-		g_trainingWhileWaiting = true;
-		g_trainingRequestedAt = GetTickCount64();
+	void RequestPractice() {
+		ResetPractice();
+		g_practising = true;
+		g_practiceRequestedAt = GetTickCount64();
 		fSystem::bNativePauseBlocked = true;
-		g_engineRequest = EngineRequest::EnterTraining;
+
+		g_practiceSetup.player = g_cond;
+		g_practiceSetup.dummy = { PRACTICE_DUMMY_CHARA, 0, PRACTICE_DUMMY_COLOR, 0, 0, 0, 0, 0, (BYTE)rBattle::ED_USF4 };
+		g_practiceSetup.stageId = g_stage;
+		g_practiceSetup.deviceType = g_deviceType;
+		g_practiceSetup.deviceIdx = g_deviceIdx;
+		g_engineRequest = EngineRequest::StartPractice;
 	}
 
-	void RequestLeaveTraining(const char* reason) {
-		if (g_leavingTrainingSince != 0) {
+	void RequestLeavePractice(const char* reason) {
+		if (g_leavingPractice) {
 			return;
 		}
-		spdlog::info("Lobby: leaving training ({})", reason);
-		g_leavingTrainingSince = GetTickCount64();
-		g_trainingMenuOpen = false;
+		spdlog::info("Lobby: leaving practice ({})", reason);
+		g_leavingPractice = true;
+		g_practiceMenuOpen = false;
 		SetSuppress(true);
-		g_engineRequest = EngineRequest::LeaveTraining;
+		g_practiceStopRequestedAt = GetTickCount64();
+		g_engineRequest = EngineRequest::StopPractice;
 	}
 
-	void EnterTrainingOnGameThread() {
-		char* query[1] = { "MainMenu" };
-		rMainMenu* mainMenu = (rMainMenu*)EventBaseWithEC::FindForegroundEvent(App::GetRootEvent(), query, 1);
-		if (!mainMenu) {
-			return;
-		}
-		spdlog::info("Lobby: training while waiting for an opponent");
-		SetSuppress(false);
-		(rMainMenu::ToItemObserver(mainMenu)->*rMainMenu::itemObserverMethods.OnModeSelected)(rMainMenu::MMI_TRAINING);
-	}
-
-	void EndTrainingModeOnGameThread() {
-		char* query[1] = { "TrainingMode" };
-		EventBaseWithEC* training = (EventBaseWithEC*)EventBaseWithEC::FindForegroundEvent(App::GetRootEvent(), query, 1);
-		if (!training) {
-			spdlog::warn("Lobby: no training mode to end");
-			return;
-		}
-		spdlog::info("Lobby: ending the training mode event");
-		EventController* children = (training->*EventBaseWithEC::publicMethods.GetChildEventController)();
-		(children->*EventController::publicMethods.EnterTerminalState)(0, 0);
-	}
-
-	// In a battle, leave it the way a finished match does; on the select
-	// screens there is no battle to leave, so end the mode itself.
-	void LeaveTrainingOnGameThread() {
-		rBattle::System* battle = rBattle::System::staticMethods.GetSingleton();
-		if (!battle) {
-			EndTrainingModeOnGameThread();
-			return;
-		}
-		spdlog::info("Lobby: leaving the training battle");
-		fVsBattle::bTerminateOnNextLeftBattle = true;
-		*rBattle::System::GetReadyState(battle) = rBattle::System::RS_ISLEAVING;
-	}
-
-	void CloseTrainingMenu() {
-		g_trainingMenuOpen = false;
+	void ClosePracticeMenu() {
+		g_practiceMenuOpen = false;
 		SetSuppress(false);
 	}
 
-	void TrackGameMenu() {
-		bool open = fSystem::IsNativePauseOpen();
-		if (open) {
-			g_gameMenuSeenOpen = true;
-		}
-		else if (g_gameMenuSeenOpen) {
-			g_gameMenuArmed = false;
-			g_gameMenuSeenOpen = false;
-			fSystem::bNativePauseBlocked = true;
-		}
-	}
-
-	void UpdateTraining() {
+	void UpdatePractice() {
 		ImDrawList* dl = ImGui::GetForegroundDrawList();
 		ImVec2 ds = ImGui::GetIO().DisplaySize;
 		Input in = ReadInput();
 		bool opponentHere = PlayerAt(0) != nullptr && PlayerAt(1) != nullptr;
 
-		if (g_leavingTrainingSince != 0) {
+		if (g_leavingPractice) {
 			DrawBanner(dl, ds, opponentHere ? "OPPONENT JOINED  -  BACK TO THE LOBBY" : "BACK TO THE LOBBY");
-			if (!g_trainingModeEndForced && GetTickCount64() - g_leavingTrainingSince > FORCE_LEAVE_TRAINING_AFTER_MS) {
-				g_trainingModeEndForced = true;
-				g_engineRequest = EngineRequest::EndTrainingMode;
+			// A battle that is still loading cannot leave yet; ask again.
+			if (GetTickCount64() - g_practiceStopRequestedAt > PRACTICE_STOP_RETRY_MS) {
+				g_practiceStopRequestedAt = GetTickCount64();
+				g_engineRequest = EngineRequest::StopPractice;
 			}
 			return;
 		}
 		if (opponentHere) {
-			RequestLeaveTraining("an opponent joined");
+			RequestLeavePractice("an opponent joined");
 			return;
 		}
 		if (!fUserApp::netplay) {
-			RequestLeaveTraining("the lobby connection is gone");
+			RequestLeavePractice("the lobby connection is gone");
 			return;
 		}
-		if (g_gameMenuArmed) {
-			TrackGameMenu();
-			if (!g_gameMenuSeenOpen) {
-				DrawBanner(dl, ds, "PRESS START FOR THE TRAINING OPTIONS");
-			}
-			return;
-		}
-		if (!g_trainingMenuOpen) {
+		if (!g_practiceMenuOpen) {
 			if (in.start) {
-				g_trainingMenuOpen = true;
-				g_trainingMenuCursor = TM_CONTINUE;
+				g_practiceMenuOpen = true;
+				g_practiceMenuCursor = PM_CONTINUE;
 				SetSuppress(true);
 			}
 			return;
 		}
 
-		DrawOverlayMenu(dl, ds, TRAINING_MENU, g_trainingMenuCursor, "Up/Down: choose     A: select     B / Start: close");
-		g_trainingMenuCursor = MoveCursor(g_trainingMenuCursor, TM_COUNT, in);
-		if (in.back || in.start) {
-			CloseTrainingMenu();
-			return;
+		DrawOverlayMenu(dl, ds, PRACTICE_MENU, g_practiceMenuCursor, "Up/Down: choose     A: select     B / Start: close");
+		g_practiceMenuCursor = MoveCursor(g_practiceMenuCursor, PM_COUNT, in);
+		if (in.back || in.start || (in.confirm && g_practiceMenuCursor == PM_CONTINUE)) {
+			ClosePracticeMenu();
 		}
-		if (!in.confirm) {
-			return;
-		}
-		switch (g_trainingMenuCursor) {
-		case TM_CONTINUE:
-			CloseTrainingMenu();
-			break;
-		case TM_OPTIONS:
-			CloseTrainingMenu();
-			g_gameMenuArmed = true;
-			fSystem::bNativePauseBlocked = false;
-			break;
-		case TM_LOBBY:
-			RequestLeaveTraining("the player chose the lobby");
-			break;
+		else if (in.confirm) {
+			RequestLeavePractice("the player chose the lobby");
 		}
 	}
 
-	// Training was requested but the main menu never left.
-	bool TrainingFailedToStart() {
-		return g_trainingWhileWaiting && GetTickCount64() - g_trainingRequestedAt > ENTER_TRAINING_TIMEOUT_MS;
+	// Practice was requested but the main menu never left.
+	bool PracticeFailedToStart() {
+		return g_practising && GetTickCount64() - g_practiceRequestedAt > PRACTICE_START_TIMEOUT_MS;
 	}
 
 	void DrawLobby(ImDrawList* dl, ImVec2 ds, const Input& in) {
@@ -1553,7 +1486,7 @@ namespace {
 
 		// Actions.
 		float ay = oy + 60;
-		const char* acts[ACT_COUNT] = { g_sentReady ? "READY  -  waiting" : "READY", "TRAINING", "LEAVE LOBBY" };
+		const char* acts[ACT_COUNT] = { g_sentReady ? "READY  -  waiting" : "READY", "PRACTICE", "LEAVE LOBBY" };
 		const ImU32 actColors[ACT_COUNT] = { GREEN, BLUE, RED };
 		float ax = 60;
 		for (int i = 0; i < ACT_COUNT; i++) {
@@ -1571,8 +1504,8 @@ namespace {
 			: g_lobbyRow == 1
 			? "Left/Right: next option     A / RB: change     LB: change back     Start: READY     B: leave"
 			: "Move: choose     A: select     Start: READY     B: leave";
-		if (g_trainingWhileWaiting) {
-			DrawHint(dl, ds, "Starting training...");
+		if (g_practising) {
+			DrawHint(dl, ds, "Starting practice...");
 			return;
 		}
 		DrawHint(dl, ds, connected ? hint : "Connecting to the lobby...");
@@ -1625,9 +1558,9 @@ namespace {
 				case ACT_READY:
 					SendReady();
 					break;
-				case ACT_TRAINING:
-					if (WaitingAlone()) RequestTraining();
-					else Flash("Training is for while you wait alone. Your opponent is here.");
+				case ACT_PRACTICE:
+					if (WaitingAlone()) RequestPractice();
+					else Flash("Practice is for while you wait alone. Your opponent is here.");
 					break;
 				case ACT_LEAVE:
 					LeaveLobby();
@@ -1740,10 +1673,19 @@ void sf4e::Lobby::OnMatchResult(int winnerSide, int charaP1, int charaP2) {
 
 void sf4e::Lobby::OnGameTick() {
 	switch (g_engineRequest.exchange(EngineRequest::None)) {
-	case EngineRequest::EnterTraining: EnterTrainingOnGameThread(); break;
-	case EngineRequest::LeaveTraining: LeaveTrainingOnGameThread(); break;
-	case EngineRequest::EndTrainingMode: EndTrainingModeOnGameThread(); break;
-	case EngineRequest::None: break;
+	case EngineRequest::StartPractice:
+		SetSuppress(false);
+		sf4e::Practice::Start(g_practiceSetup);
+		break;
+	case EngineRequest::StopPractice:
+		sf4e::Practice::Stop();
+		break;
+	case EngineRequest::AbandonPractice:
+		sf4e::Practice::OnBattleClosed();
+		SetSuppress(true);
+		break;
+	case EngineRequest::None:
+		break;
 	}
 }
 
@@ -1764,28 +1706,27 @@ void sf4e::Lobby::Draw() {
 			g_hiddenForBattle = true;
 			CloseMatchMenu();
 		}
-		if (g_trainingWhileWaiting) {
-			UpdateTraining();
+		if (g_practising) {
+			UpdatePractice();
 		}
 		else if (PlayingOnlineMatch()) {
 			UpdateMatchMenu();
 		}
 		return;
 	}
-	if (!g_hiddenForBattle && TrainingFailedToStart()) {
-		ResetTraining();
-		SetSuppress(true);
-		Flash("Training could not start. Try again from the lobby.");
+	if (!g_hiddenForBattle && PracticeFailedToStart()) {
+		ResetPractice();
+		g_engineRequest = EngineRequest::AbandonPractice;
+		Flash("Practice could not start. Try again from the lobby.");
 	}
 	if (g_hiddenForBattle) {
 		g_hiddenForBattle = false;
 		CloseMatchMenu();
 		SetSuppress(true);
 		g_sentReady = false;
-		bool fromTraining = g_trainingWhileWaiting;
-		if (fromTraining) {
-			ResetTraining();
-			fVsBattle::bTerminateOnNextLeftBattle = false;
+		bool fromPractice = g_practising;
+		if (fromPractice) {
+			ResetPractice();
 		}
 		// Soak: do not ready up the instant we land back in the lobby. The
 		// server still has to process the result report and reset both sides'
@@ -1804,7 +1745,7 @@ void sf4e::Lobby::Draw() {
 		// A forfeit was already settled by the server.
 		sf4e::SessionClient::ForfeitNotice forfeit = sf4e::SessionClient::forfeit;
 		sf4e::SessionClient::forfeit = sf4e::SessionClient::ForfeitNotice();
-		if (!fromTraining && !forfeit.pending && fUserApp::netplay && MySide() == 0) {
+		if (!fromPractice && !forfeit.pending && fUserApp::netplay && MySide() == 0) {
 			int loser = (g_hasResult && g_resultWinner >= 0) ? (1 - g_resultWinner) : 1;
 			fUserApp::netplay->client.Lobby_ReportResults(loser);
 		}
@@ -1826,7 +1767,7 @@ void sf4e::Lobby::Draw() {
 		if (forfeit.pending) {
 			ShowForfeit(forfeit);
 		}
-		if (fromTraining) {
+		if (fromPractice) {
 			g_hasResult = false;
 			g_screen = SC_LOBBY;
 			g_lobbyRow = 2;

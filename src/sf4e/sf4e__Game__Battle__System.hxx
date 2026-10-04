@@ -76,7 +76,6 @@ namespace sf4e {
 				static bool bUpdateAllowed;
 				// While set, Start does not open the game's pause menu.
 				static std::atomic<bool> bNativePauseBlocked;
-				static bool IsNativePauseOpen();
 				static int nExtraFramesToSimulate;
 
 				// GGPO broke one of its own invariants and the match was torn

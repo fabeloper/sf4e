@@ -19,6 +19,8 @@ namespace sf4e {
 			// While the lobby scene is open the game must not see the pad, or
 			// the main menu behind it reacts to every press.
 			static bool bSuppressGameInput;
+			// A side that reads as no buttons pressed, or -1.
+			static int mutedSide;
 			static void Install();
 
 			unsigned int GetButtons_RawOn(int pindex);

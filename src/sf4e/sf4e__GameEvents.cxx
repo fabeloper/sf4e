@@ -8,6 +8,7 @@
 #include "../Dimps/Dimps__Platform.hxx"
 #include "sf4e__Event.hxx"
 #include "sf4e__GameEvents.hxx"
+#include "sf4e__Practice.hxx"
 #include "sf4e__UserApp.hxx"
 
 using Dimps::Game::Request;
@@ -222,7 +223,7 @@ int fVsBattle::HasInitialized() {
 	if (bBlockInitialization) {
 		return 0;
 	}
-	if (fUserApp::netplay) {
+	if (fUserApp::netplay && !sf4e::Practice::IsActive()) {
 		if (!bSessionSentLoaded) {
 			bSessionSentLoaded = true;
 			fUserApp::netplay->client.Battle_Loaded();

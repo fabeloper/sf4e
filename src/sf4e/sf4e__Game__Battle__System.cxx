@@ -44,6 +44,7 @@
 #include "sf4e__Game__Battle__System.hxx"
 #include "sf4e__Pad.hxx"
 #include "sf4e__Platform.hxx"
+#include "sf4e__Practice.hxx"
 #include "sf4e__Rtti.hxx"
 
 using Dimps::Platform::WithReleaser;
@@ -997,6 +998,9 @@ void fSystem::BattleUpdate() {
         // transitions that happen on them.
         DWORD flowBefore = *rSystem::staticVars.CurrentBattleFlow;
         (_this->*rSystem::publicMethods.BattleUpdate)();
+        if (sf4e::Practice::IsActive() && flowBefore == BF__FIGHT) {
+            sf4e::Practice::OnBattleTick(_this);
+        }
         if (ggpo != nullptr) {
             nUntrackedIdleFrames++;
             DWORD flowAfter = *rSystem::staticVars.CurrentBattleFlow;
@@ -1042,6 +1046,7 @@ void fSystem::BattleUpdate() {
 
 void fSystem::CloseBattle() {
     rSystem* _this = (rSystem*)this;
+    sf4e::Practice::OnBattleClosed();
     if (ggpo) {
         // Report the idle-frame counts for ANY session, not just a sync test.
         // Online is the only place the two numbers can disagree, and online is
@@ -1220,15 +1225,6 @@ void fSystem::SysMain_UpdatePauseState() {
         return;
     }
     (this->*rSystem::publicMethods.SysMain_UpdatePauseState)();
-}
-
-bool fSystem::IsNativePauseOpen() {
-    rSystem* system = rSystem::staticMethods.GetSingleton();
-    if (!system) {
-        return false;
-    }
-    PauseUnit* pause = (PauseUnit*)(system->*rSystem::publicMethods.GetUnitByIndex)(U_PAUSE);
-    return pause != nullptr && *PauseUnit::GetPauseTask(pause) != nullptr;
 }
 
 void fSystem::RestoreAllFromInternalMementos(rSystem* system, rKey::MementoID * id) {
