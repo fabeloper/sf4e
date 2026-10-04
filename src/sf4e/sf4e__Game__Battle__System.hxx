@@ -72,6 +72,8 @@ namespace sf4e {
 
 				static bool bHaltAfterNext;
 				static bool bUpdateAllowed;
+				// SF4E_LEGACY_TICK=1: the tick as it was before, for an A/B on one build.
+				static bool bLegacyTick;
 				static int nExtraFramesToSimulate;
 
 				// GGPO broke one of its own invariants and the match was torn
@@ -159,6 +161,7 @@ namespace sf4e {
 					static void Free(SaveState* dst);
 					static void Reclaim(SaveState* victim, const char* reason, int slotIndex);
 					static void Save(SaveState* dst);
+					static void SaveWithChecksum(SaveState* dst);
 					static void Load(SaveState* src);
 					static void ComputeChecksum(SaveState* s);
 				};
