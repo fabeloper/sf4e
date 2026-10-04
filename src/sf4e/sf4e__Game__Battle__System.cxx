@@ -249,7 +249,92 @@ bool fSystem::bSoakCharasPreset = false;
 sf4e::Pacing::Controller fSystem::pacer;
 bool fSystem::bPredictionStalled = false;
 bool fSystem::bFrameRateSettingWrong = false;
+bool fSystem::bLegacyTick = false;
 std::vector<int> fSystem::soakCharaPool;
+
+static LONGLONG QpcNow() {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    return now.QuadPart;
+}
+
+static double QpcToMs(LONGLONG ticks) {
+    static LONGLONG frequency = 0;
+    if (frequency == 0) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        frequency = f.QuadPart;
+    }
+    return ticks * 1000.0 / frequency;
+}
+
+// What saving and rolling back cost on this PC over one logging window.
+struct RollbackCost {
+    int saves = 0;
+    LONGLONG saveTicks = 0;
+    LONGLONG slowestSaveTicks = 0;
+
+    int rollbacks = 0;
+    int resimFrames = 0;
+    int deepestRollback = 0;
+    LONGLONG rollbackTicks = 0;
+    LONGLONG slowestRollbackTicks = 0;
+
+    bool rollbackOpen = false;
+    int openDepth = 0;
+    LONGLONG openTicks = 0;
+
+    void OnSave(LONGLONG ticks) {
+        saves++;
+        saveTicks += ticks;
+        if (ticks > slowestSaveTicks) slowestSaveTicks = ticks;
+    }
+
+    void OnLoad(LONGLONG ticks) {
+        CloseRollback();
+        rollbackOpen = true;
+        openTicks = ticks;
+    }
+
+    void OnResimFrame(LONGLONG ticks) {
+        openDepth++;
+        openTicks += ticks;
+    }
+
+    void CloseRollback() {
+        if (!rollbackOpen) {
+            return;
+        }
+        rollbacks++;
+        resimFrames += openDepth;
+        rollbackTicks += openTicks;
+        if (openDepth > deepestRollback) deepestRollback = openDepth;
+        if (openTicks > slowestRollbackTicks) slowestRollbackTicks = openTicks;
+        rollbackOpen = false;
+        openDepth = 0;
+        openTicks = 0;
+    }
+};
+static RollbackCost g_rollbackCost;
+
+static void LogRollbackCost(int frame) {
+    RollbackCost& cost = g_rollbackCost;
+    cost.CloseRollback();
+    spdlog::info(
+        "Rollback cost @ frame {}: {} rollbacks, {} re-simulated frames (deepest {}), "
+        "{:.2f} ms per rollback (slowest {:.2f}), {:.2f} ms per save (slowest {:.2f}){}",
+        frame,
+        cost.rollbacks,
+        cost.resimFrames,
+        cost.deepestRollback,
+        cost.rollbacks ? QpcToMs(cost.rollbackTicks) / cost.rollbacks : 0.0,
+        QpcToMs(cost.slowestRollbackTicks),
+        cost.saves ? QpcToMs(cost.saveTicks) / cost.saves : 0.0,
+        QpcToMs(cost.slowestSaveTicks),
+        fSystem::bLegacyTick ? " [legacy tick]" : ""
+    );
+    cost = RollbackCost();
+}
 
 int fSystem::PickSoakChara() {
     if (soakCharaPool.empty()) {
@@ -572,6 +657,12 @@ void fSystem::BattleUpdate() {
         return;
     }
 
+    // Take in what arrived while the frame limiter waited, so this frame runs
+    // on the opponent's real input instead of a guess that is rolled back.
+    if (ggpo != nullptr && !syncTest.bActive && !bLegacyTick) {
+        ggpo_idle(ggpo, 0);
+    }
+
     // Pin the FP mode before this frame is simulated, so a later rollback of
     // this frame re-simulates under the identical mode. See EnforceSimFpControl.
     EnforceSimFpControl();
@@ -795,6 +886,9 @@ void fSystem::BattleUpdate() {
                     // sample in six hundred cannot support that claim, so take
                     // every frame and report the range.
                     int frame = rSystem::GetNumFramesSimulated_FixedPoint(_this)->integral;
+                    if (frame > 0 && frame % 600 == 0) {
+                        LogRollbackCost(frame);
+                    }
                     for (int i = 0; i < MAX_SF4E_PROTOCOL_USERS; i++) {
                         if (players[i].type != GGPO_PLAYERTYPE_REMOTE) {
                             continue;
@@ -1293,6 +1387,14 @@ void fSystem::StartGGPO(GGPOPlayer* inPlayers, int numPlayers, int port, int fra
         pacer.enabled = !(GetEnvironmentVariableA("SF4E_PACING", pacingEnv, sizeof(pacingEnv)) > 0 && pacingEnv[0] == '0');
         spdlog::info("Pacing: {}", pacer.enabled ? "on (frames stretch or shrink by up to 3 ms to stay level with the other PC)" : "off (SF4E_PACING=0)");
     }
+    {
+        char legacyEnv[8] = { 0 };
+        bLegacyTick = GetEnvironmentVariableA("SF4E_LEGACY_TICK", legacyEnv, sizeof(legacyEnv)) > 0 && legacyEnv[0] == '1';
+        if (bLegacyTick) {
+            spdlog::info("Tick: legacy (SF4E_LEGACY_TICK=1): checksum on every save, 1 ms network poll, no poll before input");
+        }
+        g_rollbackCost = RollbackCost();
+    }
     // Floor the delay here as well as in the menu. The lobby is one way in; the
     // debug overlay is another, and a stale settings file is a third. This is
     // the single point every path passes through, so it is the one place the
@@ -1468,6 +1570,7 @@ bool fSystem::ggpo_advance_frame_callback(int)
     // This is a rollback re-simulation. It must run under the same FP mode as
     // the original simulation of these frames did.
     EnforceSimFpControl();
+    const LONGLONG startedAt = QpcNow();
 
     fPadSystem::Inputs inputs[2] = { {0, 0}, {0, 0} };
     int disconnect_flags = 0;
@@ -1522,6 +1625,7 @@ bool fSystem::ggpo_advance_frame_callback(int)
     }
 
     fPadSystem::playbackFrame = -1;
+    g_rollbackCost.OnResimFrame(QpcNow() - startedAt);
     return true;
 }
 
@@ -1539,7 +1643,9 @@ bool fSystem::ggpo_load_game_state_callback(unsigned char* buffer, int len)
         return true;
     }
     SaveState* state = (SaveState*)buffer;
+    const LONGLONG startedAt = QpcNow();
     SaveState::Load(state);
+    g_rollbackCost.OnLoad(QpcNow() - startedAt);
     return true;
 }
 
@@ -1572,7 +1678,13 @@ bool fSystem::ggpo_save_game_state_callback(unsigned char** buffer, int* len, in
             continue;
         }
 
+        const LONGLONG startedAt = QpcNow();
         SaveState::Save(&saveStates[i]);
+        // Only the sync test compares checksums; a match never reads them.
+        if (syncTest.bActive || bLegacyTick) {
+            SaveState::ComputeChecksum(&saveStates[i]);
+        }
+        g_rollbackCost.OnSave(QpcNow() - startedAt);
         *buffer = (unsigned char*)&saveStates[i];
         *checksum = (int)saveStates[i].checksum;
 
@@ -2075,8 +2187,11 @@ void fSystem::SaveState::Save(SaveState* dst) {
     dst->d.BattleFlowCallback_CallEveryFrame_aa9254 = *rSystem::staticVars.BattleFlowCallback_CallEveryFrame_aa9254;
 
     memcpy_s(&dst->d.gameManager, sizeof(GameManager), (system->*rSystem::publicMethods.GetGameManager)(), sizeof(GameManager));
+}
 
-    SaveState::ComputeChecksum(dst);
+void fSystem::SaveState::SaveWithChecksum(SaveState* dst) {
+    Save(dst);
+    ComputeChecksum(dst);
 }
 
 static uint32_t HashGlobalData(
@@ -2454,13 +2569,13 @@ static int RunIdempotencePass(
     bool previousSkipReset = fSystem::bSkipResetAfterMemento;
     bool previousGfxLast = fSystem::bRestoreGfxLast;
 
-    fSystem::SaveState::Save(a);
+    fSystem::SaveState::SaveWithChecksum(a);
     fSystem::bSkipResetAfterMemento = skipResetAfterMemento;
     fSystem::bRestoreGfxLast = restoreGfxLast;
     fSystem::SaveState::Load(a);
     fSystem::bSkipResetAfterMemento = previousSkipReset;
     fSystem::bRestoreGfxLast = previousGfxLast;
-    fSystem::SaveState::Save(b);
+    fSystem::SaveState::SaveWithChecksum(b);
 
     int differing = CompareSaves(a, b);
 
@@ -2634,7 +2749,7 @@ void fSystem::RunIdempotenceCheck() {
         return;
     }
     SaveState* baseline = &saveStates[baselineSlot];
-    SaveState::Save(baseline);
+    SaveState::SaveWithChecksum(baseline);
 
     // Memento geometry for the actor keys. Each key's buffer holds numMementos
     // snapshots (a ring), so GetMementoDataSize spans ALL of them - not one
@@ -2759,7 +2874,7 @@ void fSystem::RunIdempotenceCheck() {
         }
         else {
             SaveState* s = &saveStates[slot];
-            SaveState::Save(s);
+            SaveState::SaveWithChecksum(s);
             SaveState::Load(s);
 
             SessionProtocol::StateSnapshot after;
@@ -2820,11 +2935,11 @@ void fSystem::RunIdempotenceCheck() {
             SaveState* z = &saveStates[slots[2]];
             spdlog::info("--- pass: convergence (two round trips) ---");
             SaveState::Load(baseline);
-            SaveState::Save(x);
+            SaveState::SaveWithChecksum(x);
             SaveState::Load(x);
-            SaveState::Save(y);
+            SaveState::SaveWithChecksum(y);
             SaveState::Load(y);
-            SaveState::Save(z);
+            SaveState::SaveWithChecksum(z);
             spdlog::info("  first round trip:");
             firstTrip = CompareSaves(x, y);
             spdlog::info("  second round trip:");
