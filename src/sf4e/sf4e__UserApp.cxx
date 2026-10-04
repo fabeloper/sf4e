@@ -24,6 +24,7 @@
 #include "sf4e__Game__Battle__System.hxx"
 #include "sf4e__GameEvents.hxx"
 #include "sf4e__Overlay.hxx"
+#include "sf4e__Lobby.hxx"
 #include "sf4e__MatchHud.hxx"
 #include "sf4e__UserApp.hxx"
 
@@ -320,9 +321,10 @@ void fUserApp::Steam_PostUpdate() {
     }
 
     if (fSystem::ggpo) {
-        ggpo_idle(fSystem::ggpo, fSystem::bLegacyTick ? 1 : 0);
+        ggpo_idle(fSystem::ggpo, 0);
     }
     fSystem::StepPacing();
+    sf4e::Lobby::OnGameTick();
 
     rUserApp::staticMethods.Steam_PostUpdate();
 }

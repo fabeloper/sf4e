@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <cctype>
 #include <cmath>
@@ -27,6 +28,7 @@
 #include "sf4e.hxx"
 #include "sf4e__Lobby.hxx"
 #include "sf4e__Game__Battle__System.hxx"
+#include "sf4e__GameEvents.hxx"
 #include "sf4e__Matchmaker.hxx"
 #include "sf4e__MatchHud.hxx"
 #include "sf4e__Pad.hxx"
@@ -38,6 +40,10 @@ using Dimps::Event::EventBaseWithEC;
 namespace rBattle = Dimps::Game::Battle;
 using rVsMode = Dimps::GameEvents::VsMode;
 using rPad = Dimps::Pad::System;
+using Dimps::Event::EventController;
+using rMainMenu = Dimps::GameEvents::MainMenu;
+using fSystem = sf4e::Game::Battle::System;
+using fVsBattle = sf4e::GameEvents::VsBattle;
 using fUserApp = sf4e::UserApp;
 using namespace sf4e::Ui;
 
@@ -249,7 +255,8 @@ namespace {
 	int g_charaCursor = 0;
 	int g_lobbyRow = 0;      // 0 = grid, 1 = options, 2 = actions
 	int g_optionCursor = 0;
-	int g_actionCursor = 0;
+	enum LobbyAction { ACT_READY, ACT_TRAINING, ACT_LEAVE, ACT_COUNT };
+	int g_actionCursor = ACT_READY;
 	rVsMode::ConfirmedCharaConditions g_cond = { 0, 0, 0, 0, 0, 0, 0, 0, (BYTE)rBattle::ED_USF4 };
 	int g_stage = 0;
 	// Until the player actually picks a stage, mirror whatever the match is
@@ -1083,7 +1090,7 @@ namespace {
 		}
 		bool rematch = in.start || (in.confirm && g_resultCursor == 0);
 		if (rematch) {
-			if (fUserApp::netplay) { SendReady(); g_screen = SC_LOBBY; g_lobbyRow = 2; g_actionCursor = 0; }
+			if (fUserApp::netplay) { SendReady(); g_screen = SC_LOBBY; g_lobbyRow = 2; g_actionCursor = ACT_READY; }
 			else g_screen = SC_HOME;
 		}
 		else if (in.confirm && g_resultCursor == 1) {
@@ -1151,6 +1158,292 @@ namespace {
 		TextOutlined(dl, g_fontHead, 30, ImVec2(a.x + 30, a.y + 8), act, PAPER);
 		DrawHint(dl, ds, "A / B: leave the lobby     Y / Ctrl+C: copy the code");
 		if (in.back || in.confirm) LeaveLobby();
+	}
+
+	// ---------------------------------------------------------------- overlay menus
+	// Menus drawn over a running battle. Nothing pauses underneath; the local
+	// fighter stands still while one is open.
+	struct OverlayMenu {
+		const char* title;
+		const char* note;
+		const char* const* items;
+		int itemCount;
+		int dangerItem;
+	};
+
+	void DrawOverlayMenu(ImDrawList* dl, ImVec2 ds, const OverlayMenu& menu, int cursor, const char* hint) {
+		const float scale = ds.y / 1080.0f;
+		const float itemW = 520 * scale, itemH = 64 * scale, gap = 18 * scale;
+		const float top = ds.y * 0.40f;
+
+		dl->AddRectFilled(ImVec2(0, 0), ds, SHADE);
+		TextCentered(dl, g_fontTitle, 84 * scale, ds.x * 0.5f, top - 150 * scale, menu.title, PAPER);
+		TextCentered(dl, g_fontBody, 24 * scale, ds.x * 0.5f, top - 48 * scale, menu.note, PAPER_DIM, false);
+		for (int i = 0; i < menu.itemCount; i++) {
+			bool selected = i == cursor;
+			ImVec2 a(ds.x * 0.5f - itemW * 0.5f, top + i * (itemH + gap)), b(a.x + itemW, a.y + itemH);
+			Slant(dl, a, b, selected ? (i == menu.dangerItem ? RED : GREEN) : INK_SOFT, 14 * scale);
+			TextCentered(dl, g_fontHead, 36 * scale, ds.x * 0.5f, a.y + 12 * scale, menu.items[i], selected ? PAPER : PAPER_DIM, selected);
+		}
+		TextCentered(dl, g_fontBody, 24 * scale, ds.x * 0.5f, top + menu.itemCount * (itemH + gap) + 16 * scale, hint,
+			cursor == menu.dangerItem ? GOLD : PAPER_DIM, false);
+	}
+
+	int MoveCursor(int cursor, int count, const Input& in) {
+		if (in.up) return (cursor + count - 1) % count;
+		if (in.down) return (cursor + 1) % count;
+		return cursor;
+	}
+
+	void DrawBanner(ImDrawList* dl, ImVec2 ds, const char* text) {
+		const float scale = ds.y / 1080.0f;
+		const float size = 40 * scale, y = ds.y * 0.22f;
+		ImVec2 sz = TextSize(g_fontHead, size, text);
+		Slant(dl, ImVec2(ds.x * 0.5f - sz.x * 0.5f - size, y), ImVec2(ds.x * 0.5f + sz.x * 0.5f + size, y + size * 1.6f), SHADE, 14 * scale);
+		TextCentered(dl, g_fontHead, size, ds.x * 0.5f, y + size * 0.25f, text, GOLD);
+	}
+
+	// ---------------------------------------------------------------- match menu
+	const ULONGLONG FORFEIT_REPLY_TIMEOUT_MS = 3000;
+	enum MatchMenuItem { MM_CONTINUE, MM_LOBBY, MM_COUNT };
+	const char* const MATCH_MENU_ITEMS[MM_COUNT] = { "CONTINUE", "BACK TO LOBBY" };
+	const OverlayMenu MATCH_MENU = { "MATCH MENU", "The match keeps running while this is open", MATCH_MENU_ITEMS, MM_COUNT, MM_LOBBY };
+	bool g_matchMenuOpen = false;
+	int g_matchMenuCursor = MM_CONTINUE;
+	ULONGLONG g_forfeitSentAt = 0;
+
+	bool PlayingOnlineMatch() {
+		return fUserApp::netplay && !g_spectate && fSystem::ggpo != nullptr;
+	}
+
+	void CloseMatchMenu() {
+		g_matchMenuOpen = false;
+		g_forfeitSentAt = 0;
+		SetSuppress(g_spectate);
+	}
+
+	bool WaitingForForfeitReply() {
+		return g_forfeitSentAt != 0 && GetTickCount64() - g_forfeitSentAt < FORFEIT_REPLY_TIMEOUT_MS;
+	}
+
+	void UpdateMatchMenu() {
+		Input in = ReadInput();
+		if (!g_matchMenuOpen) {
+			if (in.start) {
+				g_matchMenuOpen = true;
+				g_matchMenuCursor = MM_CONTINUE;
+				SetSuppress(true);
+			}
+			return;
+		}
+
+		const char* hint = WaitingForForfeitReply()
+			? "Leaving the match..."
+			: g_matchMenuCursor == MM_LOBBY
+			? "Leaving now counts as a loss     A: confirm     B: close"
+			: "Up/Down: choose     A: select     B / Start: close";
+		DrawOverlayMenu(ImGui::GetForegroundDrawList(), ImGui::GetIO().DisplaySize, MATCH_MENU, g_matchMenuCursor, hint);
+		if (WaitingForForfeitReply()) {
+			return;
+		}
+		g_matchMenuCursor = MoveCursor(g_matchMenuCursor, MM_COUNT, in);
+		if (in.back || in.start || (in.confirm && g_matchMenuCursor == MM_CONTINUE)) {
+			CloseMatchMenu();
+		}
+		else if (in.confirm) {
+			fUserApp::netplay->client.Lobby_Forfeit();
+			g_forfeitSentAt = GetTickCount64();
+		}
+	}
+
+	void ShowForfeit(const sf4e::SessionClient::ForfeitNotice& forfeit) {
+		g_hasResult = false;
+		g_screen = SC_LOBBY;
+		g_lobbyRow = 2;
+		if (forfeit.mySide < 0) {
+			Flash("A player left the match.");
+			return;
+		}
+		bool iLeft = forfeit.mySide == forfeit.loserSide;
+		if (iLeft) g_losses++; else g_wins++;
+		Flash(iLeft ? "You left the match. It counts as a loss." : "Your opponent left the match. You win.", !iLeft);
+	}
+
+	// ---------------------------------------------------------------- training while waiting
+	// A player alone in a lobby can practise until an opponent joins. The lobby
+	// session stays connected throughout; the engine is only touched from the
+	// game thread, through OnGameTick.
+	const ULONGLONG ENTER_TRAINING_TIMEOUT_MS = 5000;
+	const ULONGLONG FORCE_LEAVE_TRAINING_AFTER_MS = 4000;
+	enum TrainingMenuItem { TM_CONTINUE, TM_OPTIONS, TM_LOBBY, TM_COUNT };
+	const char* const TRAINING_MENU_ITEMS[TM_COUNT] = { "CONTINUE", "TRAINING OPTIONS", "BACK TO LOBBY" };
+	const OverlayMenu TRAINING_MENU = { "TRAINING", "Waiting for an opponent to join your lobby", TRAINING_MENU_ITEMS, TM_COUNT, -1 };
+
+	enum class EngineRequest { None, EnterTraining, LeaveTraining, EndTrainingMode };
+	std::atomic<EngineRequest> g_engineRequest(EngineRequest::None);
+
+	bool g_trainingWhileWaiting = false;
+	ULONGLONG g_trainingRequestedAt = 0;
+	bool g_trainingMenuOpen = false;
+	int g_trainingMenuCursor = TM_CONTINUE;
+	// TRAINING OPTIONS hands the next Start press to the game's own menu.
+	bool g_gameMenuArmed = false;
+	bool g_gameMenuSeenOpen = false;
+	ULONGLONG g_leavingTrainingSince = 0;
+	bool g_trainingModeEndForced = false;
+
+	bool WaitingAlone() {
+		return PlayerAt(0) != nullptr && PlayerAt(1) == nullptr;
+	}
+
+	void ResetTraining() {
+		g_trainingWhileWaiting = false;
+		g_trainingRequestedAt = 0;
+		g_trainingMenuOpen = false;
+		g_gameMenuArmed = false;
+		g_gameMenuSeenOpen = false;
+		g_leavingTrainingSince = 0;
+		g_trainingModeEndForced = false;
+		fSystem::bNativePauseBlocked = false;
+	}
+
+	void RequestTraining() {
+		ResetTraining();
+		g_trainingWhileWaiting = true;
+		g_trainingRequestedAt = GetTickCount64();
+		fSystem::bNativePauseBlocked = true;
+		g_engineRequest = EngineRequest::EnterTraining;
+	}
+
+	void RequestLeaveTraining(const char* reason) {
+		if (g_leavingTrainingSince != 0) {
+			return;
+		}
+		spdlog::info("Lobby: leaving training ({})", reason);
+		g_leavingTrainingSince = GetTickCount64();
+		g_trainingMenuOpen = false;
+		SetSuppress(true);
+		g_engineRequest = EngineRequest::LeaveTraining;
+	}
+
+	void EnterTrainingOnGameThread() {
+		char* query[1] = { "MainMenu" };
+		rMainMenu* mainMenu = (rMainMenu*)EventBaseWithEC::FindForegroundEvent(App::GetRootEvent(), query, 1);
+		if (!mainMenu) {
+			return;
+		}
+		spdlog::info("Lobby: training while waiting for an opponent");
+		SetSuppress(false);
+		(rMainMenu::ToItemObserver(mainMenu)->*rMainMenu::itemObserverMethods.OnModeSelected)(rMainMenu::MMI_TRAINING);
+	}
+
+	void EndTrainingModeOnGameThread() {
+		char* query[1] = { "TrainingMode" };
+		EventBaseWithEC* training = (EventBaseWithEC*)EventBaseWithEC::FindForegroundEvent(App::GetRootEvent(), query, 1);
+		if (!training) {
+			spdlog::warn("Lobby: no training mode to end");
+			return;
+		}
+		spdlog::info("Lobby: ending the training mode event");
+		EventController* children = (training->*EventBaseWithEC::publicMethods.GetChildEventController)();
+		(children->*EventController::publicMethods.EnterTerminalState)(0, 0);
+	}
+
+	// In a battle, leave it the way a finished match does; on the select
+	// screens there is no battle to leave, so end the mode itself.
+	void LeaveTrainingOnGameThread() {
+		rBattle::System* battle = rBattle::System::staticMethods.GetSingleton();
+		if (!battle) {
+			EndTrainingModeOnGameThread();
+			return;
+		}
+		spdlog::info("Lobby: leaving the training battle");
+		fVsBattle::bTerminateOnNextLeftBattle = true;
+		*rBattle::System::GetReadyState(battle) = rBattle::System::RS_ISLEAVING;
+	}
+
+	void CloseTrainingMenu() {
+		g_trainingMenuOpen = false;
+		SetSuppress(false);
+	}
+
+	void TrackGameMenu() {
+		bool open = fSystem::IsNativePauseOpen();
+		if (open) {
+			g_gameMenuSeenOpen = true;
+		}
+		else if (g_gameMenuSeenOpen) {
+			g_gameMenuArmed = false;
+			g_gameMenuSeenOpen = false;
+			fSystem::bNativePauseBlocked = true;
+		}
+	}
+
+	void UpdateTraining() {
+		ImDrawList* dl = ImGui::GetForegroundDrawList();
+		ImVec2 ds = ImGui::GetIO().DisplaySize;
+		Input in = ReadInput();
+		bool opponentHere = PlayerAt(0) != nullptr && PlayerAt(1) != nullptr;
+
+		if (g_leavingTrainingSince != 0) {
+			DrawBanner(dl, ds, opponentHere ? "OPPONENT JOINED  -  BACK TO THE LOBBY" : "BACK TO THE LOBBY");
+			if (!g_trainingModeEndForced && GetTickCount64() - g_leavingTrainingSince > FORCE_LEAVE_TRAINING_AFTER_MS) {
+				g_trainingModeEndForced = true;
+				g_engineRequest = EngineRequest::EndTrainingMode;
+			}
+			return;
+		}
+		if (opponentHere) {
+			RequestLeaveTraining("an opponent joined");
+			return;
+		}
+		if (!fUserApp::netplay) {
+			RequestLeaveTraining("the lobby connection is gone");
+			return;
+		}
+		if (g_gameMenuArmed) {
+			TrackGameMenu();
+			if (!g_gameMenuSeenOpen) {
+				DrawBanner(dl, ds, "PRESS START FOR THE TRAINING OPTIONS");
+			}
+			return;
+		}
+		if (!g_trainingMenuOpen) {
+			if (in.start) {
+				g_trainingMenuOpen = true;
+				g_trainingMenuCursor = TM_CONTINUE;
+				SetSuppress(true);
+			}
+			return;
+		}
+
+		DrawOverlayMenu(dl, ds, TRAINING_MENU, g_trainingMenuCursor, "Up/Down: choose     A: select     B / Start: close");
+		g_trainingMenuCursor = MoveCursor(g_trainingMenuCursor, TM_COUNT, in);
+		if (in.back || in.start) {
+			CloseTrainingMenu();
+			return;
+		}
+		if (!in.confirm) {
+			return;
+		}
+		switch (g_trainingMenuCursor) {
+		case TM_CONTINUE:
+			CloseTrainingMenu();
+			break;
+		case TM_OPTIONS:
+			CloseTrainingMenu();
+			g_gameMenuArmed = true;
+			fSystem::bNativePauseBlocked = false;
+			break;
+		case TM_LOBBY:
+			RequestLeaveTraining("the player chose the lobby");
+			break;
+		}
+	}
+
+	// Training was requested but the main menu never left.
+	bool TrainingFailedToStart() {
+		return g_trainingWhileWaiting && GetTickCount64() - g_trainingRequestedAt > ENTER_TRAINING_TIMEOUT_MS;
 	}
 
 	void DrawLobby(ImDrawList* dl, ImVec2 ds, const Input& in) {
@@ -1260,13 +1553,14 @@ namespace {
 
 		// Actions.
 		float ay = oy + 60;
-		const char* acts[2] = { g_sentReady ? "READY  -  waiting" : "READY", "LEAVE LOBBY" };
+		const char* acts[ACT_COUNT] = { g_sentReady ? "READY  -  waiting" : "READY", "TRAINING", "LEAVE LOBBY" };
+		const ImU32 actColors[ACT_COUNT] = { GREEN, BLUE, RED };
 		float ax = 60;
-		for (int i = 0; i < 2; i++) {
+		for (int i = 0; i < ACT_COUNT; i++) {
 			bool cursor = g_lobbyRow == 2 && i == g_actionCursor;
 			ImVec2 sz = TextSize(g_fontHead, 30, acts[i]);
 			ImVec2 a(ax, ay), b(ax + sz.x + 60, ay + 50);
-			Slant(dl, a, b, cursor ? (i == 0 ? GREEN : RED) : CARD, 10);
+			Slant(dl, a, b, cursor ? actColors[i] : CARD, 10);
 			if (!cursor) dl->AddRect(a, b, CARD_EDGE, 0, 0, 1);
 			if (cursor) TextOutlined(dl, g_fontHead, 30, ImVec2(a.x + 30, a.y + 8), acts[i], PAPER);
 			else dl->AddText(g_fontHead, 30, ImVec2(a.x + 30, a.y + 8), PAPER_DIM, acts[i]);
@@ -1277,6 +1571,10 @@ namespace {
 			: g_lobbyRow == 1
 			? "Left/Right: next option     A / RB: change     LB: change back     Start: READY     B: leave"
 			: "Move: choose     A: select     Start: READY     B: leave";
+		if (g_trainingWhileWaiting) {
+			DrawHint(dl, ds, "Starting training...");
+			return;
+		}
 		DrawHint(dl, ds, connected ? hint : "Connecting to the lobby...");
 
 		// Input.
@@ -1320,97 +1618,26 @@ namespace {
 		}
 		else {
 			if (in.up) g_lobbyRow = 1;
-			if (in.left || in.right) g_actionCursor = 1 - g_actionCursor;
+			if (in.left) g_actionCursor = (g_actionCursor + ACT_COUNT - 1) % ACT_COUNT;
+			if (in.right) g_actionCursor = (g_actionCursor + 1) % ACT_COUNT;
 			if (in.confirm) {
-				if (g_actionCursor == 0) SendReady();
-				else { fUserApp::netplay.reset(); g_mm.Cancel(); g_screen = SC_HOME; return; }
+				switch (g_actionCursor) {
+				case ACT_READY:
+					SendReady();
+					break;
+				case ACT_TRAINING:
+					if (WaitingAlone()) RequestTraining();
+					else Flash("Training is for while you wait alone. Your opponent is here.");
+					break;
+				case ACT_LEAVE:
+					LeaveLobby();
+					return;
+				}
 			}
 		}
 		if (in.start && connected) SendReady();
-		if (in.back && g_lobbyRow != 2) { g_lobbyRow = 2; g_actionCursor = 1; }
+		if (in.back && g_lobbyRow != 2) { g_lobbyRow = 2; g_actionCursor = ACT_LEAVE; }
 		else if (in.back) { fUserApp::netplay.reset(); g_mm.Cancel(); g_screen = SC_HOME; }
-	}
-	// ---------------------------------------------------------------- match menu
-	// Start during an online match. The fight cannot pause, so the menu sits
-	// on top of it and the local fighter stands still while it is open.
-	const ULONGLONG FORFEIT_REPLY_TIMEOUT_MS = 3000;
-	bool g_matchMenuOpen = false;
-	int g_matchMenuCursor = 0;
-	ULONGLONG g_forfeitSentAt = 0;
-
-	bool PlayingOnlineMatch() {
-		return fUserApp::netplay && !g_spectate && sf4e::Game::Battle::System::ggpo != nullptr;
-	}
-
-	void CloseMatchMenu() {
-		g_matchMenuOpen = false;
-		g_forfeitSentAt = 0;
-		SetSuppress(g_spectate);
-	}
-
-	bool WaitingForForfeitReply() {
-		return g_forfeitSentAt != 0 && GetTickCount64() - g_forfeitSentAt < FORFEIT_REPLY_TIMEOUT_MS;
-	}
-
-	void DrawMatchMenu(ImDrawList* dl, ImVec2 ds) {
-		const char* items[2] = { "CONTINUE", "BACK TO LOBBY" };
-		const float scale = ds.y / 1080.0f;
-		const float itemW = 520 * scale, itemH = 64 * scale, gap = 18 * scale;
-		const float top = ds.y * 0.40f;
-
-		dl->AddRectFilled(ImVec2(0, 0), ds, SHADE);
-		TextCentered(dl, g_fontTitle, 84 * scale, ds.x * 0.5f, top - 150 * scale, "MATCH MENU", PAPER);
-		TextCentered(dl, g_fontBody, 24 * scale, ds.x * 0.5f, top - 48 * scale, "The match keeps running while this is open", PAPER_DIM, false);
-		for (int i = 0; i < 2; i++) {
-			bool cursor = i == g_matchMenuCursor;
-			ImVec2 a(ds.x * 0.5f - itemW * 0.5f, top + i * (itemH + gap)), b(a.x + itemW, a.y + itemH);
-			Slant(dl, a, b, cursor ? (i == 0 ? GREEN : RED) : INK_SOFT, 14 * scale);
-			TextCentered(dl, g_fontHead, 36 * scale, ds.x * 0.5f, a.y + 12 * scale, items[i], cursor ? PAPER : PAPER_DIM, cursor);
-		}
-		const char* hint = WaitingForForfeitReply()
-			? "Leaving the match..."
-			: g_matchMenuCursor == 1
-			? "Leaving now counts as a loss     A: confirm     B: close"
-			: "Up/Down: choose     A: select     B / Start: close";
-		TextCentered(dl, g_fontBody, 24 * scale, ds.x * 0.5f, top + 2 * (itemH + gap) + 16 * scale, hint, g_matchMenuCursor == 1 ? GOLD : PAPER_DIM, false);
-	}
-
-	void UpdateMatchMenu() {
-		Input in = ReadInput();
-		if (!g_matchMenuOpen) {
-			if (in.start) {
-				g_matchMenuOpen = true;
-				g_matchMenuCursor = 0;
-				SetSuppress(true);
-			}
-			return;
-		}
-
-		DrawMatchMenu(ImGui::GetForegroundDrawList(), ImGui::GetIO().DisplaySize);
-		if (WaitingForForfeitReply()) {
-			return;
-		}
-		if (in.up || in.down) g_matchMenuCursor = 1 - g_matchMenuCursor;
-		if (in.back || in.start || (in.confirm && g_matchMenuCursor == 0)) {
-			CloseMatchMenu();
-		}
-		else if (in.confirm) {
-			fUserApp::netplay->client.Lobby_Forfeit();
-			g_forfeitSentAt = GetTickCount64();
-		}
-	}
-
-	void ShowForfeit(const sf4e::SessionClient::ForfeitNotice& forfeit) {
-		g_hasResult = false;
-		g_screen = SC_LOBBY;
-		g_lobbyRow = 2;
-		if (forfeit.mySide < 0) {
-			Flash("A player left the match.");
-			return;
-		}
-		bool iLeft = forfeit.mySide == forfeit.loserSide;
-		if (iLeft) g_losses++; else g_wins++;
-		Flash(iLeft ? "You left the match. It counts as a loss." : "Your opponent left the match. You win.", !iLeft);
 	}
 }
 
@@ -1511,6 +1738,15 @@ void sf4e::Lobby::OnMatchResult(int winnerSide, int charaP1, int charaP2) {
 	spdlog::info("Lobby: match over, winner side {} (me: side {})", winnerSide, g_mySideAtResult);
 }
 
+void sf4e::Lobby::OnGameTick() {
+	switch (g_engineRequest.exchange(EngineRequest::None)) {
+	case EngineRequest::EnterTraining: EnterTrainingOnGameThread(); break;
+	case EngineRequest::LeaveTraining: LeaveTrainingOnGameThread(); break;
+	case EngineRequest::EndTrainingMode: EndTrainingModeOnGameThread(); break;
+	case EngineRequest::None: break;
+	}
+}
+
 void sf4e::Lobby::Draw() {
 	if (!g_open) {
 		if (g_releaseLatch) {
@@ -1528,16 +1764,29 @@ void sf4e::Lobby::Draw() {
 			g_hiddenForBattle = true;
 			CloseMatchMenu();
 		}
-		if (PlayingOnlineMatch()) {
+		if (g_trainingWhileWaiting) {
+			UpdateTraining();
+		}
+		else if (PlayingOnlineMatch()) {
 			UpdateMatchMenu();
 		}
 		return;
+	}
+	if (!g_hiddenForBattle && TrainingFailedToStart()) {
+		ResetTraining();
+		SetSuppress(true);
+		Flash("Training could not start. Try again from the lobby.");
 	}
 	if (g_hiddenForBattle) {
 		g_hiddenForBattle = false;
 		CloseMatchMenu();
 		SetSuppress(true);
 		g_sentReady = false;
+		bool fromTraining = g_trainingWhileWaiting;
+		if (fromTraining) {
+			ResetTraining();
+			fVsBattle::bTerminateOnNextLeftBattle = false;
+		}
 		// Soak: do not ready up the instant we land back in the lobby. The
 		// server still has to process the result report and reset both sides'
 		// readiness; readying into that window races it and can leave one PC
@@ -1555,7 +1804,7 @@ void sf4e::Lobby::Draw() {
 		// A forfeit was already settled by the server.
 		sf4e::SessionClient::ForfeitNotice forfeit = sf4e::SessionClient::forfeit;
 		sf4e::SessionClient::forfeit = sf4e::SessionClient::ForfeitNotice();
-		if (!forfeit.pending && fUserApp::netplay && MySide() == 0) {
+		if (!fromTraining && !forfeit.pending && fUserApp::netplay && MySide() == 0) {
 			int loser = (g_hasResult && g_resultWinner >= 0) ? (1 - g_resultWinner) : 1;
 			fUserApp::netplay->client.Lobby_ReportResults(loser);
 		}
@@ -1576,6 +1825,13 @@ void sf4e::Lobby::Draw() {
 		}
 		if (forfeit.pending) {
 			ShowForfeit(forfeit);
+		}
+		if (fromTraining) {
+			g_hasResult = false;
+			g_screen = SC_LOBBY;
+			g_lobbyRow = 2;
+			g_actionCursor = ACT_READY;
+			if (PlayerAt(0) && PlayerAt(1)) Flash("Your opponent is here. Ready up!", true);
 		}
 	}
 
@@ -1609,7 +1865,7 @@ void sf4e::Lobby::Draw() {
 			SendReady();
 			g_screen = SC_LOBBY;
 			g_lobbyRow = 2;
-			g_actionCursor = 0;
+			g_actionCursor = ACT_READY;
 		}
 	}
 

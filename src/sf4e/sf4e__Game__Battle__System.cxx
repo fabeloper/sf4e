@@ -250,7 +250,7 @@ bool fSystem::bSoakCharasPreset = false;
 sf4e::Pacing::Controller fSystem::pacer;
 bool fSystem::bPredictionStalled = false;
 bool fSystem::bFrameRateSettingWrong = false;
-bool fSystem::bLegacyTick = false;
+std::atomic<bool> fSystem::bNativePauseBlocked(false);
 std::vector<int> fSystem::soakCharaPool;
 
 static LONGLONG QpcNow() {
@@ -324,7 +324,7 @@ static void LogRollbackCost(int frame) {
     cost.CloseRollback();
     spdlog::info(
         "Rollback cost @ frame {}: {} rollbacks, {} re-simulated frames (deepest {}), "
-        "{:.2f} ms per rollback (slowest {:.2f}), {:.2f} ms per save (slowest {:.2f}){}",
+        "{:.2f} ms per rollback (slowest {:.2f}), {:.2f} ms per save (slowest {:.2f})",
         frame,
         cost.rollbacks,
         cost.resimFrames,
@@ -332,8 +332,7 @@ static void LogRollbackCost(int frame) {
         cost.rollbacks ? QpcToMs(cost.rollbackTicks) / cost.rollbacks : 0.0,
         QpcToMs(cost.slowestRollbackTicks),
         cost.saves ? QpcToMs(cost.saveTicks) / cost.saves : 0.0,
-        QpcToMs(cost.slowestSaveTicks),
-        fSystem::bLegacyTick ? " [legacy tick]" : ""
+        QpcToMs(cost.slowestSaveTicks)
     );
     cost = RollbackCost();
 }
@@ -661,7 +660,7 @@ void fSystem::BattleUpdate() {
 
     // Take in what arrived while the frame limiter waited, so this frame runs
     // on the opponent's real input instead of a guess that is rolled back.
-    if (ggpo != nullptr && !syncTest.bActive && !bLegacyTick) {
+    if (ggpo != nullptr && !syncTest.bActive) {
         ggpo_idle(ggpo, 0);
     }
 
@@ -1217,9 +1216,19 @@ void fSystem::SysMain_HandleTrainingModeFeatures() {
 }
 
 void fSystem::SysMain_UpdatePauseState() {
-    if (!ggpo) {
-        (this->*rSystem::publicMethods.SysMain_UpdatePauseState)();
+    if (ggpo || bNativePauseBlocked) {
+        return;
     }
+    (this->*rSystem::publicMethods.SysMain_UpdatePauseState)();
+}
+
+bool fSystem::IsNativePauseOpen() {
+    rSystem* system = rSystem::staticMethods.GetSingleton();
+    if (!system) {
+        return false;
+    }
+    PauseUnit* pause = (PauseUnit*)(system->*rSystem::publicMethods.GetUnitByIndex)(U_PAUSE);
+    return pause != nullptr && *PauseUnit::GetPauseTask(pause) != nullptr;
 }
 
 void fSystem::RestoreAllFromInternalMementos(rSystem* system, rKey::MementoID * id) {
@@ -1395,14 +1404,7 @@ void fSystem::StartGGPO(GGPOPlayer* inPlayers, int numPlayers, int port, int fra
         pacer.enabled = !(GetEnvironmentVariableA("SF4E_PACING", pacingEnv, sizeof(pacingEnv)) > 0 && pacingEnv[0] == '0');
         spdlog::info("Pacing: {}", pacer.enabled ? "on (frames stretch or shrink by up to 3 ms to stay level with the other PC)" : "off (SF4E_PACING=0)");
     }
-    {
-        char legacyEnv[8] = { 0 };
-        bLegacyTick = GetEnvironmentVariableA("SF4E_LEGACY_TICK", legacyEnv, sizeof(legacyEnv)) > 0 && legacyEnv[0] == '1';
-        if (bLegacyTick) {
-            spdlog::info("Tick: legacy (SF4E_LEGACY_TICK=1): checksum on every save, 1 ms network poll, no poll before input");
-        }
-        g_rollbackCost = RollbackCost();
-    }
+    g_rollbackCost = RollbackCost();
     // Floor the delay here as well as in the menu. The lobby is one way in; the
     // debug overlay is another, and a stale settings file is a third. This is
     // the single point every path passes through, so it is the one place the
@@ -1689,7 +1691,7 @@ bool fSystem::ggpo_save_game_state_callback(unsigned char** buffer, int* len, in
         const LONGLONG startedAt = QpcNow();
         SaveState::Save(&saveStates[i]);
         // Only the sync test compares checksums; a match never reads them.
-        if (syncTest.bActive || bLegacyTick) {
+        if (syncTest.bActive) {
             SaveState::ComputeChecksum(&saveStates[i]);
         }
         g_rollbackCost.OnSave(QpcNow() - startedAt);

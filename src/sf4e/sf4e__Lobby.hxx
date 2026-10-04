@@ -27,6 +27,10 @@ namespace sf4e {
 		// Draw and process input for this frame. Safe to call every frame.
 		void Draw();
 
+		// Once per game tick, on the game thread: runs what the menus asked of
+		// the engine.
+		void OnGameTick();
+
 		// A join was refused by the server. The lobby shows the reason and
 		// returns the player to the menu -- until now this only reached the
 		// debug overlay, so a refused join looked like nothing happening at all.
