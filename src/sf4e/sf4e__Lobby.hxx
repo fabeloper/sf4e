@@ -1,6 +1,7 @@
 #pragma once
 
 struct ImGuiIO;
+struct ImFont;
 
 namespace sf4e {
 	// The player-facing lobby: a full-screen scene drawn over the game's main
@@ -15,6 +16,8 @@ namespace sf4e {
 		// Called once per ImGui context. Loads the display fonts from the
 		// fonts every Windows install ships with; falls back to ImGui's own.
 		void LoadFonts(ImGuiIO& io);
+		ImFont* HeadFont();
+		ImFont* BodyFont();
 
 		// Show the scene. Only meaningful on the main menu.
 		void Open();

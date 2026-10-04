@@ -58,6 +58,21 @@ namespace sf4e {
 		const int CHARA_COUNT = 0x2c;
 		const int STAGE_COUNT = 30;
 		const int COSTUME_COUNT = 8;
+
+		// A seat that sends INPUT_DELAY_AUTO lets the server pick from the
+		// measured round trip between the two players.
+		const int INPUT_DELAY_AUTO = 0;
+		const int INPUT_DELAY_DEFAULT = 2;
+		const int INPUT_DELAY_MAX = 8;
+
+		inline int InputDelayForRoundTrip(int roundTripMs) {
+			if (roundTripMs < 0) return INPUT_DELAY_DEFAULT;
+			if (roundTripMs <= 50) return 1;
+			if (roundTripMs <= 100) return 2;
+			if (roundTripMs <= 150) return 3;
+			if (roundTripMs <= 200) return 4;
+			return 5;
+		}
 		const int COLOR_COUNT = 10;
 		const int ULTRA_COUNT = 3;
 		bool CharaConditionsValid(const CharaConditions& c);
@@ -176,6 +191,11 @@ namespace sf4e {
 			// could not get from the one report that mattered most.
 			MT_DESYNC_REPORT,
 
+			// A player left a running match through the menu; it counts as
+			// their loss. The server answers both players with MT_MATCH_FORFEITED.
+			MT_LOBBY_FORFEIT,
+			MT_MATCH_FORFEITED,
+
 			MT_FORWARD,
 		};
 
@@ -201,6 +221,9 @@ namespace sf4e {
 			{MT_DIRECT_OFFER, "direct_offer"},
 			{MT_DIRECT_PEER, "direct_peer"},
 			{MT_DESYNC_REPORT, "desync_report"},
+
+			{MT_LOBBY_FORFEIT, "lobby_forfeit"},
+			{MT_MATCH_FORFEITED, "match_forfeited"},
 
 			{MT_FORWARD, "forward"},
 		})
@@ -261,6 +284,10 @@ namespace sf4e {
 			int32_t inputDelay = -1;
 			// False takes the seat back to not ready; ignored once both are ready.
 			bool ready = true;
+			// Round trips this player measured, or -1: to the lobby server, and
+			// to the other player over a proven direct path.
+			int32_t serverPingMs = -1;
+			int32_t directRoundTripMs = -1;
 		};
 
 		struct LobbyAllReady {
@@ -270,6 +297,15 @@ namespace sf4e {
 		struct LobbyReportResults {
 			MessageType type = MT_LOBBY_REPORTRESULTS;
 			int32_t loserSide;
+		};
+
+		struct LobbyForfeit {
+			MessageType type = MT_LOBBY_FORFEIT;
+		};
+
+		struct MatchForfeited {
+			MessageType type = MT_MATCH_FORFEITED;
+			int32_t loserSide = -1;
 		};
 
 		struct PreBattleSetEnv {
@@ -451,9 +487,11 @@ namespace sf4e {
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SessionJoinReject, type, result);
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SessionJoinRequest, type, sidecarHash, username, port, spectator, secret);
 
-		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(LobbyReady, type, inputDelay, ready);
+		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(LobbyReady, type, inputDelay, ready, serverPingMs, directRoundTripMs);
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LobbyAllReady, type);
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LobbyReportResults, type, loserSide);
+		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LobbyForfeit, type);
+		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MatchForfeited, type, loserSide);
 
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PreBattleSetChara, type, chara);
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DirectOffer, type, ip, port, localIp, localPort);

@@ -233,7 +233,7 @@ void HolePunch::CheckNatType(const sockaddr_in& secondServer, int timeoutMs) {
 bool HolePunch::Punch(const std::string& peerIp, uint16_t peerPort,
 	const std::string& peerLocalIp, uint16_t peerLocalPort,
 	const std::string& token, int timeoutMs,
-	std::string& chosenIp, uint16_t& chosenPort, bool matchStart) {
+	std::string& chosenIp, uint16_t& chosenPort, int& rttMs, bool matchStart) {
 	if (_sock == INVALID_SOCKET) {
 		return false;
 	}
@@ -296,6 +296,8 @@ bool HolePunch::Punch(const std::string& peerIp, uint16_t peerPort,
 
 	DWORD deadline = GetTickCount() + timeoutMs;
 	DWORD nextSend = 0;
+	DWORD lastProbeAt = 0;
+	rttMs = -1;
 	int sent = 0;
 	bool gotAck = false;    // they answered one of our probes
 	bool ackedPeer = false; // we answered one of theirs (a marked one at match start)
@@ -314,6 +316,7 @@ bool HolePunch::Punch(const std::string& peerIp, uint16_t peerPort,
 					(const sockaddr*)&candidates[i].addr, sizeof(candidates[i].addr));
 			}
 			nextSend = GetTickCount() + 50;
+			lastProbeAt = GetTickCount();
 			sent++;
 		}
 
@@ -358,6 +361,11 @@ bool HolePunch::Punch(const std::string& peerIp, uint16_t peerPort,
 			inet_ntop(AF_INET, &from.sin_addr, fromIp, sizeof(fromIp));
 			chosenIp = fromIp;
 			chosenPort = ntohs(from.sin_port);
+
+			if(!gotAck) {
+				rttMs = (int)(GetTickCount() - lastProbeAt);
+			}
+
 			gotAck = true;
 		}
 		else {

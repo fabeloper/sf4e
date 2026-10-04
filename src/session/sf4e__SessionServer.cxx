@@ -613,17 +613,18 @@ int SessionServer::Step()
 					if (!_matchData.IsAllReady()) {
 						_matchData.readyMessageNum[side] = -1;
 						_matchData.inputDelay[side] = -1;
+						_readyRequest[side] = SessionProtocol::LobbyReady();
 						_dataDirty = true;
 					}
 					continue;
 				}
 				_matchData.readyMessageNum[side] = pIncomingMsg->GetMessageNumber();
 				_matchData.inputDelay[side] = request.inputDelay;
+				_readyRequest[side] = request;
 				if (_matchData.IsAllReady()) {
-					int a = _matchData.inputDelay[0] < 0 ? 0 : _matchData.inputDelay[0];
-					int b = _matchData.inputDelay[1] < 0 ? 0 : _matchData.inputDelay[1];
-					int shared = a > b ? a : b;
-					spdlog::info("Match delay {} frames (seats chose {} and {})", shared, a, b);
+					int shared = SharedInputDelay();
+					spdlog::info("Match delay {} frames (seats chose {} and {}, round trip {} ms)", shared,
+						_readyRequest[0].inputDelay, _readyRequest[1].inputDelay, MeasuredRoundTripMs());
 					_matchData.inputDelay[0] = _matchData.inputDelay[1] = shared;
 				}
 				bSendLobbyAllReady = bSendLobbyAllReady || _matchData.IsAllReady();
@@ -641,6 +642,9 @@ int SessionServer::Step()
 
 				HandleResults(request.loserSide);
 				_dataDirty = true;
+			}
+			else if (type == SessionProtocol::MT_LOBBY_FORFEIT) {
+				HandleForfeit(conn);
 			}
 			else if (type == SessionProtocol::MT_BATTLE_SNAPSHOT) {
 				// Forward the snapshot to every other client. Spectators only
@@ -1021,6 +1025,63 @@ void SessionServer::LogStat(const std::string& event, const nlohmann::json& fiel
 	fwrite(s.c_str(), 1, s.size(), f);
 	fputc('\n', f);
 	fclose(f);
+}
+
+// Direct when both players proved a path to each other; otherwise the
+// match goes through this server, one player's ping after the other's.
+int SessionServer::MeasuredRoundTripMs() const {
+	const SessionProtocol::LobbyReady& a = _readyRequest[0];
+	const SessionProtocol::LobbyReady& b = _readyRequest[1];
+	if (a.directRoundTripMs >= 0 && b.directRoundTripMs >= 0) {
+		return a.directRoundTripMs > b.directRoundTripMs ? a.directRoundTripMs : b.directRoundTripMs;
+	}
+	if (a.serverPingMs >= 0 && b.serverPingMs >= 0) {
+		return a.serverPingMs + b.serverPingMs;
+	}
+	return -1;
+}
+
+int SessionServer::SharedInputDelay() const {
+	int automatic = SessionProtocol::InputDelayForRoundTrip(MeasuredRoundTripMs());
+	int shared = 0;
+	for (int side = 0; side < 2; side++) {
+		int chosen = _readyRequest[side].inputDelay;
+		if (chosen <= SessionProtocol::INPUT_DELAY_AUTO) {
+			chosen = automatic;
+		}
+		if (chosen > SessionProtocol::INPUT_DELAY_MAX) {
+			chosen = SessionProtocol::INPUT_DELAY_MAX;
+		}
+		if (chosen > shared) {
+			shared = chosen;
+		}
+	}
+	return shared;
+}
+
+void SessionServer::HandleForfeit(HSteamNetConnection conn) {
+	int loserSide = -1;
+	for (int i = 0; i < PlayerCount(); i++) {
+		if (clients.at(i).conn == conn) {
+			loserSide = i;
+		}
+	}
+	if (loserSide < 0 || !_matchData.IsAllReady()) {
+		return;
+	}
+
+	SessionProtocol::MatchForfeited notice;
+	notice.loserSide = loserSide;
+	for (auto& client : clients) {
+		if (client.conn != k_HSteamNetConnection_Invalid) {
+			Respond(client.conn, notice);
+		}
+	}
+	LogStat("forfeit", {
+		{"seconds", _matchStartMs != 0 ? (int)((NowMs() - _matchStartMs) / 1000) : 0},
+	});
+	HandleResults(loserSide);
+	_dataDirty = true;
 }
 
 void SessionServer::HandleResults(int loserIndex) {

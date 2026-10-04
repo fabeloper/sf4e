@@ -64,7 +64,7 @@ namespace sf4e {
 		bool Punch(const std::string& peerIp, uint16_t peerPort,
 			const std::string& peerLocalIp, uint16_t peerLocalPort,
 			const std::string& token, int timeoutMs,
-			std::string& chosenIp, uint16_t& chosenPort, bool matchStart = false);
+			std::string& chosenIp, uint16_t& chosenPort, int& rttMs, bool matchStart = false);
 
 		// Keeps a proven path alive. A NAT forgets an idle UDP mapping in
 		// anywhere from thirty seconds upward, and a lobby can sit far longer

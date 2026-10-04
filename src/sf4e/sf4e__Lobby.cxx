@@ -28,8 +28,10 @@
 #include "sf4e__Lobby.hxx"
 #include "sf4e__Game__Battle__System.hxx"
 #include "sf4e__Matchmaker.hxx"
+#include "sf4e__MatchHud.hxx"
 #include "sf4e__Pad.hxx"
 #include "sf4e__UserApp.hxx"
+#include "sf4e__UiStyle.hxx"
 
 using Dimps::App;
 using Dimps::Event::EventBaseWithEC;
@@ -37,23 +39,10 @@ namespace rBattle = Dimps::Game::Battle;
 using rVsMode = Dimps::GameEvents::VsMode;
 using rPad = Dimps::Pad::System;
 using fUserApp = sf4e::UserApp;
+using namespace sf4e::Ui;
 
 namespace {
-	// ---------------------------------------------------------------- look
-	// The game's own palette: ink black, poster red, paper white, and the
-	// gold it reserves for what matters.
-	const ImU32 INK        = IM_COL32(8, 8, 10, 255);
-	const ImU32 INK_SOFT   = IM_COL32(20, 20, 24, 255);
-	const ImU32 RED        = IM_COL32(200, 16, 46, 255);
-	const ImU32 RED_DEEP   = IM_COL32(120, 8, 26, 255);
-	const ImU32 PAPER      = IM_COL32(240, 236, 226, 255);
-	const ImU32 PAPER_DIM  = IM_COL32(200, 196, 186, 255);
-	const ImU32 GOLD       = IM_COL32(242, 193, 78, 255);
-	const ImU32 GREEN      = IM_COL32(88, 214, 120, 255);
-	const ImU32 SHADE      = IM_COL32(0, 0, 0, 150);
-	const ImU32 CARD       = IM_COL32(255, 255, 255, 18);
-	const ImU32 CARD_EDGE  = IM_COL32(255, 255, 255, 70);
-
+	// ---------------------------------------------------------------- fonts
 	ImFont* g_fontTitle = nullptr;   // Impact, huge
 	ImFont* g_fontHead = nullptr;    // Impact, headings and menu
 	ImFont* g_fontBody = nullptr;    // Segoe UI Semibold
@@ -94,9 +83,10 @@ namespace {
 	// the game rolls back constantly -- measured at 90 ms, the opponent sits 5-6
 	// frames behind and every one of those is re-simulated. One frame is the
 	// floor: it costs 16 ms and removes a whole class of avoidable rollback.
+	const int AUTO_DELAY = sf4e::SessionProtocol::INPUT_DELAY_AUTO;
 	const int MIN_DELAY = 1;
-	const int MAX_DELAY = 8;
-	int g_delay = 2;
+	const int MAX_DELAY = sf4e::SessionProtocol::INPUT_DELAY_MAX;
+	int g_delay = AUTO_DELAY;
 	uint16_t g_localGgpoPort = 23457;
 
 	int g_homeCursor = 0;
@@ -161,10 +151,8 @@ namespace {
 		char line[256];
 		while (fgets(line, sizeof(line), f)) {
 			int v = 0;
-			// A settings file written before the floor existed can hold 0; clamp it
-			// up rather than rejecting the line, so the rest of the file still loads.
-			if (sscanf_s(line, "delay=%d", &v) == 1 && v >= 0 && v <= MAX_DELAY) {
-				g_delay = v < MIN_DELAY ? MIN_DELAY : v;
+			if (sscanf_s(line, "inputdelay=%d", &v) == 1 && v >= AUTO_DELAY && v <= MAX_DELAY) {
+				g_delay = v;
 			}
 			else if (sscanf_s(line, "server=%d", &v) == 1 && v >= 0) g_serverIdx = v;
 			else if (sscanf_s(line, "direct=%d", &v) == 1) g_directOptIn = (v != 0);
@@ -184,7 +172,7 @@ namespace {
 		if (path[0] == 0) return;
 		FILE* f = _wfopen(path, L"w");
 		if (f == nullptr) return;
-		fprintf(f, "delay=%d\nserver=%d\ndirect=%d\npublic=%d\n", g_delay, g_serverIdx, g_directOptIn ? 1 : 0, g_public ? 1 : 0);
+		fprintf(f, "inputdelay=%d\nserver=%d\ndirect=%d\npublic=%d\n", g_delay, g_serverIdx, g_directOptIn ? 1 : 0, g_public ? 1 : 0);
 		fclose(f);
 	}
 
@@ -412,29 +400,6 @@ namespace {
 	}
 
 	// ---------------------------------------------------------------- draw helpers
-	void TextOutlined(ImDrawList* dl, ImFont* font, float size, ImVec2 pos, const char* text, ImU32 col, float outline = 2.0f) {
-		for (int dx = -1; dx <= 1; dx++) for (int dy = -1; dy <= 1; dy++) {
-			if (dx == 0 && dy == 0) continue;
-			dl->AddText(font, size, ImVec2(pos.x + dx * outline, pos.y + dy * outline), INK, text);
-		}
-		dl->AddText(font, size, pos, col, text);
-	}
-
-	ImVec2 TextSize(ImFont* font, float size, const char* text) {
-		return font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
-	}
-
-	void TextCentered(ImDrawList* dl, ImFont* font, float size, float cx, float y, const char* text, ImU32 col, bool outline = true) {
-		ImVec2 sz = TextSize(font, size, text);
-		ImVec2 pos(cx - sz.x * 0.5f, y);
-		if (outline) TextOutlined(dl, font, size, pos, text, col); else dl->AddText(font, size, pos, col, text);
-	}
-
-	// A slanted highlight bar, the game's own menu idiom.
-	void Slant(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float skew = 12.0f) {
-		dl->AddQuadFilled(ImVec2(a.x + skew, a.y), ImVec2(b.x + skew, a.y), ImVec2(b.x, b.y), ImVec2(a.x, b.y), col);
-	}
-
 	void GenerateStrokes(ImVec2 ds) {
 		g_strokes.clear();
 		unsigned s = 0x5F4E;
@@ -640,7 +605,7 @@ namespace {
 			c.PreBattle_SetEnv(sf4e::localRand());
 			c.PreBattle_SetStage(g_stage);
 		}
-		c.Lobby_Ready(g_delay);
+		c.Lobby_Ready(g_delay, g_mm.serverPingMs);
 		g_sentReady = true;
 	}
 
@@ -742,7 +707,8 @@ namespace {
 		}
 
 		char delayLabel[32];
-		snprintf(delayLabel, sizeof(delayLabel), "INPUT DELAY   <  %d  >", g_delay);
+		if (g_delay == AUTO_DELAY) snprintf(delayLabel, sizeof(delayLabel), "INPUT DELAY   <  AUTO  >");
+		else snprintf(delayLabel, sizeof(delayLabel), "INPUT DELAY   <  %d  >", g_delay);
 		char serverLabel[64];
 		if (g_servers.size() > 1) {
 			snprintf(serverLabel, sizeof(serverLabel), "SERVER   <  %s  >", g_servers[g_serverIdx].name.c_str());
@@ -802,7 +768,7 @@ namespace {
 			}
 		}
 		if (g_homeCursor == 4) {
-			if (in.left && g_delay > MIN_DELAY) g_delay--;
+			if (in.left && g_delay > AUTO_DELAY) g_delay--;
 			if (in.right && g_delay < MAX_DELAY) g_delay++;
 			if (in.left || in.right) SaveSettings();
 		}
@@ -1364,6 +1330,88 @@ namespace {
 		if (in.back && g_lobbyRow != 2) { g_lobbyRow = 2; g_actionCursor = 1; }
 		else if (in.back) { fUserApp::netplay.reset(); g_mm.Cancel(); g_screen = SC_HOME; }
 	}
+	// ---------------------------------------------------------------- match menu
+	// Start during an online match. The fight cannot pause, so the menu sits
+	// on top of it and the local fighter stands still while it is open.
+	const ULONGLONG FORFEIT_REPLY_TIMEOUT_MS = 3000;
+	bool g_matchMenuOpen = false;
+	int g_matchMenuCursor = 0;
+	ULONGLONG g_forfeitSentAt = 0;
+
+	bool PlayingOnlineMatch() {
+		return fUserApp::netplay && !g_spectate && sf4e::Game::Battle::System::ggpo != nullptr;
+	}
+
+	void CloseMatchMenu() {
+		g_matchMenuOpen = false;
+		g_forfeitSentAt = 0;
+		SetSuppress(g_spectate);
+	}
+
+	bool WaitingForForfeitReply() {
+		return g_forfeitSentAt != 0 && GetTickCount64() - g_forfeitSentAt < FORFEIT_REPLY_TIMEOUT_MS;
+	}
+
+	void DrawMatchMenu(ImDrawList* dl, ImVec2 ds) {
+		const char* items[2] = { "CONTINUE", "BACK TO LOBBY" };
+		const float scale = ds.y / 1080.0f;
+		const float itemW = 520 * scale, itemH = 64 * scale, gap = 18 * scale;
+		const float top = ds.y * 0.40f;
+
+		dl->AddRectFilled(ImVec2(0, 0), ds, SHADE);
+		TextCentered(dl, g_fontTitle, 84 * scale, ds.x * 0.5f, top - 150 * scale, "MATCH MENU", PAPER);
+		TextCentered(dl, g_fontBody, 24 * scale, ds.x * 0.5f, top - 48 * scale, "The match keeps running while this is open", PAPER_DIM, false);
+		for (int i = 0; i < 2; i++) {
+			bool cursor = i == g_matchMenuCursor;
+			ImVec2 a(ds.x * 0.5f - itemW * 0.5f, top + i * (itemH + gap)), b(a.x + itemW, a.y + itemH);
+			Slant(dl, a, b, cursor ? (i == 0 ? GREEN : RED) : INK_SOFT, 14 * scale);
+			TextCentered(dl, g_fontHead, 36 * scale, ds.x * 0.5f, a.y + 12 * scale, items[i], cursor ? PAPER : PAPER_DIM, cursor);
+		}
+		const char* hint = WaitingForForfeitReply()
+			? "Leaving the match..."
+			: g_matchMenuCursor == 1
+			? "Leaving now counts as a loss     A: confirm     B: close"
+			: "Up/Down: choose     A: select     B / Start: close";
+		TextCentered(dl, g_fontBody, 24 * scale, ds.x * 0.5f, top + 2 * (itemH + gap) + 16 * scale, hint, g_matchMenuCursor == 1 ? GOLD : PAPER_DIM, false);
+	}
+
+	void UpdateMatchMenu() {
+		Input in = ReadInput();
+		if (!g_matchMenuOpen) {
+			if (in.start) {
+				g_matchMenuOpen = true;
+				g_matchMenuCursor = 0;
+				SetSuppress(true);
+			}
+			return;
+		}
+
+		DrawMatchMenu(ImGui::GetForegroundDrawList(), ImGui::GetIO().DisplaySize);
+		if (WaitingForForfeitReply()) {
+			return;
+		}
+		if (in.up || in.down) g_matchMenuCursor = 1 - g_matchMenuCursor;
+		if (in.back || in.start || (in.confirm && g_matchMenuCursor == 0)) {
+			CloseMatchMenu();
+		}
+		else if (in.confirm) {
+			fUserApp::netplay->client.Lobby_Forfeit();
+			g_forfeitSentAt = GetTickCount64();
+		}
+	}
+
+	void ShowForfeit(const sf4e::SessionClient::ForfeitNotice& forfeit) {
+		g_hasResult = false;
+		g_screen = SC_LOBBY;
+		g_lobbyRow = 2;
+		if (forfeit.mySide < 0) {
+			Flash("A player left the match.");
+			return;
+		}
+		bool iLeft = forfeit.mySide == forfeit.loserSide;
+		if (iLeft) g_losses++; else g_wins++;
+		Flash(iLeft ? "You left the match. It counts as a loss." : "Your opponent left the match. You win.", !iLeft);
+	}
 }
 
 // ---------------------------------------------------------------- public
@@ -1387,6 +1435,9 @@ void sf4e::Lobby::LoadFonts(ImGuiIO& io) {
 	if (!g_fontSmall) g_fontSmall = fallback;
 	if (g_fontTitle == fallback) spdlog::warn("Lobby: Impact/Segoe not found, using the default font");
 }
+
+ImFont* sf4e::Lobby::HeadFont() { return g_fontHead; }
+ImFont* sf4e::Lobby::BodyFont() { return g_fontBody; }
 
 void sf4e::Lobby::Open() {
 	if (g_open) return;
@@ -1473,11 +1524,18 @@ void sf4e::Lobby::Draw() {
 	// Hide during a match, and come back for the rematch.
 	bool menu = OnMainMenu();
 	if (!menu) {
-		if (!g_hiddenForBattle) { g_hiddenForBattle = true; SetSuppress(g_spectate); }
+		if (!g_hiddenForBattle) {
+			g_hiddenForBattle = true;
+			CloseMatchMenu();
+		}
+		if (PlayingOnlineMatch()) {
+			UpdateMatchMenu();
+		}
 		return;
 	}
 	if (g_hiddenForBattle) {
 		g_hiddenForBattle = false;
+		CloseMatchMenu();
 		SetSuppress(true);
 		g_sentReady = false;
 		// Soak: do not ready up the instant we land back in the lobby. The
@@ -1494,7 +1552,10 @@ void sf4e::Lobby::Draw() {
 		// Only one side may report, or the winner-stays rotation runs twice
 		// and undoes itself; P1 does it. A draw is reported as P2 losing,
 		// which leaves the sides where they were.
-		if (fUserApp::netplay && MySide() == 0) {
+		// A forfeit was already settled by the server.
+		sf4e::SessionClient::ForfeitNotice forfeit = sf4e::SessionClient::forfeit;
+		sf4e::SessionClient::forfeit = sf4e::SessionClient::ForfeitNotice();
+		if (!forfeit.pending && fUserApp::netplay && MySide() == 0) {
 			int loser = (g_hasResult && g_resultWinner >= 0) ? (1 - g_resultWinner) : 1;
 			fUserApp::netplay->client.Lobby_ReportResults(loser);
 		}
@@ -1512,6 +1573,9 @@ void sf4e::Lobby::Draw() {
 			g_screen = SC_LOBBY;
 			g_lobbyRow = 2;
 			Flash("The match desynced and had to stop. Ready up to try again.");
+		}
+		if (forfeit.pending) {
+			ShowForfeit(forfeit);
 		}
 	}
 
