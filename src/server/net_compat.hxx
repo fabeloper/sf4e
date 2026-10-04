@@ -15,12 +15,19 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 
+typedef WSAPOLLFD PollEntry;
+const short POLL_READABLE = POLLRDNORM;
+inline int PollSockets(PollEntry* entries, unsigned long count, int timeoutMs) {
+	return WSAPoll(entries, count, timeoutMs);
+}
+
 #else
 
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -72,6 +79,12 @@ inline ULONGLONG GetTickCount64() {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (ULONGLONG)ts.tv_sec * 1000ULL + (ULONGLONG)(ts.tv_nsec / 1000000);
+}
+
+typedef struct pollfd PollEntry;
+const short POLL_READABLE = POLLIN;
+inline int PollSockets(PollEntry* entries, unsigned long count, int timeoutMs) {
+	return ::poll(entries, count, timeoutMs);
 }
 
 inline void Sleep(unsigned int ms) {

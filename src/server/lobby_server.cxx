@@ -608,6 +608,94 @@ namespace {
 		}
 		return { {"ok", false}, {"error", "bad_request"} };
 	}
+	// One JSON datagram in, one out.
+	void ServeMatchmaker(SOCKET matchmaker, ULONGLONG now) {
+		for (;;) {
+			char buf[1500];
+			sockaddr_in from = { 0 };
+			socklen_t fromLen = sizeof(from);   // POSIX wants socklen_t; Winsock defines it too
+			int n = recvfrom(matchmaker, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &fromLen);
+			if (n <= 0) {
+				break;
+			}
+			buf[n] = 0;
+			if (!AllowMatchmaker(from, now)) {
+				continue;
+			}
+			json reply;
+			try {
+				reply = HandleMatchmaker(json::parse(buf), now, from);
+			}
+			catch (const std::exception&) {
+				reply = { {"ok", false}, {"error", "bad_request"} };
+			}
+			std::string out = reply.dump();
+			sendto(matchmaker, out.c_str(), (int)out.size(), 0, (sockaddr*)&from, sizeof(from));
+		}
+	}
+
+	// The sockets whose packets are answered or forwarded the moment they
+	// arrive, instead of on the next loop tick: match traffic and pings.
+	struct WakeSockets {
+		struct Owner {
+			Lobby* lobby;   // null: the matchmaker
+			int pipe;       // negative: the players' relay
+		};
+		std::vector<PollEntry> entries;
+		std::vector<Owner> owners;
+
+		void Add(SOCKET sock, Lobby* lobby, int pipe) {
+			PollEntry entry = { 0 };
+			entry.fd = sock;
+			entry.events = POLL_READABLE;
+			entries.push_back(entry);
+			owners.push_back({ lobby, pipe });
+		}
+
+		void AddMatchmaker(SOCKET matchmaker) {
+			Add(matchmaker, nullptr, 0);
+		}
+
+		void AddLobby(Lobby& lobby) {
+			Add(lobby.relay.sock, &lobby, -1);
+			for (int k = 0; k < MAX_SPECTATORS_PER_LOBBY; k++) {
+				Add(lobby.pipes[k].hostSock, &lobby, k);
+				Add(lobby.pipes[k].specSock, &lobby, k);
+			}
+		}
+
+		void ServeUntil(int timeoutMs) {
+			int ready = PollSockets(entries.data(), (unsigned long)entries.size(), timeoutMs);
+			if (ready < 0) {
+				Sleep(timeoutMs);
+			}
+			if (ready <= 0) {
+				return;
+			}
+			ULONGLONG now = GetTickCount64();
+			for (size_t i = 0; i < entries.size(); i++) {
+				if (!(entries[i].revents & POLL_READABLE)) {
+					continue;
+				}
+				const Owner& owner = owners[i];
+				if (owner.lobby == nullptr) {
+					ServeMatchmaker(entries[i].fd, now);
+				}
+				else if (owner.pipe < 0) {
+					owner.lobby->relay.Pump(now);
+				}
+				else {
+					owner.lobby->pipes[owner.pipe].Pump(now);
+				}
+			}
+		}
+	};
+
+	int MillisecondsUntil(std::chrono::steady_clock::time_point deadline) {
+		auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(
+			deadline - std::chrono::steady_clock::now()).count();
+		return remaining <= 0 ? 0 : (int)((remaining + 999) / 1000);
+	}
 }
 
 int main(int argc, char** argv) {
@@ -673,32 +761,24 @@ int main(int argc, char** argv) {
 		FIRST_SPECTATOR_PORT, FIRST_SPECTATOR_PORT + NUM_LOBBIES * SPECTATOR_PORTS_PER_LOBBY - 1,
 		NUM_LOBBIES);
 
+	WakeSockets wake;
+	wake.AddMatchmaker(matchmaker);
+	for (auto& l : g_lobbies) {
+		wake.AddLobby(l);
+	}
+	const auto housekeepingInterval = std::chrono::milliseconds(2);
+	auto nextHousekeeping = std::chrono::steady_clock::now();
+
 	while (g_running) {
+		wake.ServeUntil(MillisecondsUntil(nextHousekeeping));
+		if (MillisecondsUntil(nextHousekeeping) > 0) {
+			continue;
+		}
+		nextHousekeeping = std::chrono::steady_clock::now() + housekeepingInterval;
+
 		ULONGLONG now = GetTickCount64();
 
-		// Matchmaker requests: one JSON datagram in, one out.
-		for (;;) {
-			char buf[1500];
-			sockaddr_in from = { 0 };
-			socklen_t fromLen = sizeof(from);   // POSIX wants socklen_t; Winsock defines it too
-			int n = recvfrom(matchmaker, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &fromLen);
-			if (n <= 0) {
-				break;
-			}
-			buf[n] = 0;
-			if (!AllowMatchmaker(from, now)) {
-				continue;
-			}
-			json reply;
-			try {
-				reply = HandleMatchmaker(json::parse(buf), now, from);
-			}
-			catch (const std::exception&) {
-				reply = { {"ok", false}, {"error", "bad_request"} };
-			}
-			std::string out = reply.dump();
-			sendto(matchmaker, out.c_str(), (int)out.size(), 0, (sockaddr*)&from, sizeof(from));
-		}
+		ServeMatchmaker(matchmaker, now);
 
 		SteamNetworkingSockets()->RunCallbacks();
 
@@ -733,8 +813,6 @@ int main(int argc, char** argv) {
 				}
 			}
 		}
-
-		Sleep(2);
 	}
 
 	spdlog::info("shutting down");
