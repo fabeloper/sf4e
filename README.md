@@ -2,6 +2,19 @@
 
 A process-inspection and modification tool for the Steam release of _Ultra Street Fighter 4_.
 
+> [!WARNING]
+> **SF4Enhanced is no longer maintained.** Development stopped on 4 October 2026 and the
+> public lobby servers have been shut down, so the released builds can no longer find a
+> lobby on their own.
+>
+> For rollback netplay in Ultra Street Fighter IV, use
+> [SF4 Ember Netplay](https://github.com/Confetti3/SF4-Ember-Netplay), which has become
+> the community standard.
+>
+> The code stays here under its license for anyone who wants to read it, fork it or run
+> their own server (see [SERVER.md](SERVER.md)). Thank you to everyone who played, helped
+> and supported the project.
+
 ## About this fork
 
 This repository is a fork of [sf4e](https://codeberg.org/adanducci/sf4e), created and
