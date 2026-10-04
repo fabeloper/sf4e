@@ -11,9 +11,12 @@ A process-inspection and modification tool for the Steam release of _Ultra Stree
 > [SF4 Ember Netplay](https://github.com/Confetti3/SF4-Ember-Netplay), which has become
 > the community standard.
 >
-> The code stays here under its license for anyone who wants to read it, fork it or run
-> their own server (see [SERVER.md](SERVER.md)). Thank you to everyone who played, helped
-> and supported the project.
+> The last build is **1.2.0**. It has no default server: to play, one person runs the
+> lobby server that ships with the release and each player puts its address in a
+> `server.txt` file next to `SF4Enhanced.exe` (see [SERVER.md](SERVER.md)).
+>
+> The code stays here under its license for anyone who wants to read it, fork it or build
+> on it. Thank you to everyone who played, helped and supported the project.
 
 ## About this fork
 
