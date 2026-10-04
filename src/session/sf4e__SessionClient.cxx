@@ -107,7 +107,6 @@ SessionClient* SessionClient::s_pCallbackInstance;
 bool SessionClient::bVerboseLogging = false;
 bool SessionClient::bDesyncAbort = false;
 bool SessionClient::bConnectionLost = false;
-SessionClient::ForfeitNotice SessionClient::forfeit;
 
 SessionClient::SessionClient(
 	const Callbacks& callbacks,
@@ -483,21 +482,6 @@ int SessionClient::Step()
 				AbortForDesync();
 			}
 		}
-		else if (type == SessionProtocol::MT_MATCH_FORFEITED) {
-			SessionProtocol::MatchForfeited notice;
-			try {
-				msg.get_to(notice);
-			}
-			catch (json::exception e) {
-				spdlog::warn("Client: could not deserialize the forfeit notice");
-				continue;
-			}
-			forfeit.pending = true;
-			forfeit.loserSide = notice.loserSide;
-			forfeit.mySide = MySide();
-			spdlog::info("Match ended by forfeit: side {} left", notice.loserSide);
-			LeaveBattle();
-		}
 		else if (type == SessionProtocol::MT_FORWARD) {
 			spdlog::debug("Received forwarded message: {}", msg.dump());
 		}
@@ -697,31 +681,6 @@ EResult SessionClient::Lobby_Unready()
 		spdlog::warn("Client: could not send not-ready! Result: {}", (int)result);
 	}
 	return result;
-}
-
-EResult SessionClient::Lobby_Forfeit()
-{
-	json msg = SessionProtocol::LobbyForfeit();
-	EResult result = Send(msg, nullptr);
-	if (result != k_EResultOK) {
-		spdlog::warn("Client: could not send the forfeit! Result: {}", (int)result);
-	}
-	return result;
-}
-
-int SessionClient::MySide() const
-{
-	int side = 0;
-	for (const SessionProtocol::MemberData& member : _lobbyData.members) {
-		if (member.spectator) {
-			continue;
-		}
-		if (member.connId.host == _cid.host && member.connId.user == _cid.user) {
-			return side;
-		}
-		side++;
-	}
-	return -1;
 }
 
 EResult SessionClient::Lobby_ReportResults(int loserSide)

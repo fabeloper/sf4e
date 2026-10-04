@@ -191,11 +191,6 @@ namespace sf4e {
 			// could not get from the one report that mattered most.
 			MT_DESYNC_REPORT,
 
-			// A player left a running match through the menu; it counts as
-			// their loss. The server answers both players with MT_MATCH_FORFEITED.
-			MT_LOBBY_FORFEIT,
-			MT_MATCH_FORFEITED,
-
 			MT_FORWARD,
 		};
 
@@ -221,9 +216,6 @@ namespace sf4e {
 			{MT_DIRECT_OFFER, "direct_offer"},
 			{MT_DIRECT_PEER, "direct_peer"},
 			{MT_DESYNC_REPORT, "desync_report"},
-
-			{MT_LOBBY_FORFEIT, "lobby_forfeit"},
-			{MT_MATCH_FORFEITED, "match_forfeited"},
 
 			{MT_FORWARD, "forward"},
 		})
@@ -297,15 +289,6 @@ namespace sf4e {
 		struct LobbyReportResults {
 			MessageType type = MT_LOBBY_REPORTRESULTS;
 			int32_t loserSide;
-		};
-
-		struct LobbyForfeit {
-			MessageType type = MT_LOBBY_FORFEIT;
-		};
-
-		struct MatchForfeited {
-			MessageType type = MT_MATCH_FORFEITED;
-			int32_t loserSide = -1;
 		};
 
 		struct PreBattleSetEnv {
@@ -490,8 +473,6 @@ namespace sf4e {
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(LobbyReady, type, inputDelay, ready, serverPingMs, directRoundTripMs);
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LobbyAllReady, type);
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LobbyReportResults, type, loserSide);
-		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LobbyForfeit, type);
-		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MatchForfeited, type, loserSide);
 
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PreBattleSetChara, type, chara);
 		NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DirectOffer, type, ip, port, localIp, localPort);

@@ -33,15 +33,6 @@ namespace sf4e {
 		// and fatal to an unattended run.
 		static bool bConnectionLost;
 
-		// A player left the running match through the menu. Seats are the
-		// ones in effect when the notice arrived, before the server rotates.
-		struct ForfeitNotice {
-			bool pending = false;
-			int loserSide = -1;
-			int mySide = -1;
-		};
-		static ForfeitNotice forfeit;
-
 		enum ErrorType {
 			SCE_UNKNOWN,
 			SCE_JOIN_REJECTED_HASH_INVALID,
@@ -83,7 +74,6 @@ namespace sf4e {
 		bool _snapshotsEnabled;
 
 		EResult Lobby_Ready(int inputDelay, int serverPingMs = -1);
-		EResult Lobby_Forfeit();
 		EResult Lobby_Unready();
 		EResult Lobby_ReportResults(int loserSide);
 
@@ -120,7 +110,6 @@ namespace sf4e {
 		void DisableDirect();
 		bool IsDirectEnabled() const { return _directEnabled; }
 		int DirectRoundTripMs() const { return _punchProven ? _directRttMs : -1; }
-		int MySide() const;
 
 		// Called just before GGPO starts. Punches if the other player also
 		// opted in, and reports whether a direct path opened. On false (the

@@ -643,9 +643,6 @@ int SessionServer::Step()
 				HandleResults(request.loserSide);
 				_dataDirty = true;
 			}
-			else if (type == SessionProtocol::MT_LOBBY_FORFEIT) {
-				HandleForfeit(conn);
-			}
 			else if (type == SessionProtocol::MT_BATTLE_SNAPSHOT) {
 				// Forward the snapshot to every other client. Spectators only
 				// listen: their state must never end a players' match.
@@ -1057,31 +1054,6 @@ int SessionServer::SharedInputDelay() const {
 		}
 	}
 	return shared;
-}
-
-void SessionServer::HandleForfeit(HSteamNetConnection conn) {
-	int loserSide = -1;
-	for (int i = 0; i < PlayerCount(); i++) {
-		if (clients.at(i).conn == conn) {
-			loserSide = i;
-		}
-	}
-	if (loserSide < 0 || !_matchData.IsAllReady()) {
-		return;
-	}
-
-	SessionProtocol::MatchForfeited notice;
-	notice.loserSide = loserSide;
-	for (auto& client : clients) {
-		if (client.conn != k_HSteamNetConnection_Invalid) {
-			Respond(client.conn, notice);
-		}
-	}
-	LogStat("forfeit", {
-		{"seconds", _matchStartMs != 0 ? (int)((NowMs() - _matchStartMs) / 1000) : 0},
-	});
-	HandleResults(loserSide);
-	_dataDirty = true;
 }
 
 void SessionServer::HandleResults(int loserIndex) {

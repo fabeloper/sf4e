@@ -82,7 +82,6 @@ namespace sf4e {
 		// per-address caps.
 		std::map<HSteamNetConnection, uint32_t> _accepted;
 		void HandleResults(int loserSide);
-		void HandleForfeit(HSteamNetConnection conn);
 
 		// What each seat sent with its ready, kept until the match starts.
 		SessionProtocol::LobbyReady _readyRequest[2];
