@@ -19,6 +19,7 @@ vcpkg_from_github(
         "fast-quality-report.patch"
         "stalled-input-repair.patch"
         "init-round-trip-time.patch"
+        "log-format-once.patch"
 )
 
 # stalled-input-repair.patch includes this header; it has to exist in the tree.

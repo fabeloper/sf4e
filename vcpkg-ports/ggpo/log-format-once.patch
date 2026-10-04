@@ -1,0 +1,33 @@
+--- a/src/lib/ggpo/log.cpp	2026-10-01 07:37:10.663401800 +0200
++++ b/src/lib/ggpo/log.cpp	2026-10-01 07:37:10.728200100 +0200
+@@ -71,7 +71,5 @@
+ 
+    vfprintf(fp, fmt, args);
+    fflush(fp);
+-   
+-   vsprintf_s(logbuf, ARRAY_SIZE(logbuf), fmt, args);
+ }
+ 
+--- a/src/lib/ggpo/network/udp_proto.cpp	2026-10-01 07:37:10.678941700 +0200
++++ b/src/lib/ggpo/network/udp_proto.cpp	2026-10-01 07:37:21.248027500 +0200
+@@ -470,16 +470,16 @@
+ 
+    int total_bytes_sent = _bytes_sent + (UDP_HEADER_SIZE * _packets_sent);
+    float seconds = (float)((now - _stats_start_time) / 1000.0);
+-   float Bps = total_bytes_sent / seconds;
+-   float udp_overhead = (float)(100.0 * (UDP_HEADER_SIZE * _packets_sent) / _bytes_sent);
++   float Bps = seconds > 0 ? total_bytes_sent / seconds : 0;
++   float udp_overhead = _bytes_sent > 0 ? (float)(100.0 * (UDP_HEADER_SIZE * _packets_sent) / _bytes_sent) : 0;
+ 
+    _kbps_sent = int(Bps / 1024);
+ 
+    Log("Network Stats -- Bandwidth: %.2f KBps   Packets Sent: %5d (%.2f pps)   "
+        "KB Sent: %.2f    UDP Overhead: %.2f %%.\n",
+-       _kbps_sent, 
++       (double)_kbps_sent,
+        _packets_sent,
+-       (float)_packets_sent * 1000 / (now - _stats_start_time),
++       (now > _stats_start_time ? (float)_packets_sent * 1000 / (now - _stats_start_time) : 0),
+        total_bytes_sent / 1024.0,
+        udp_overhead);
+ }
